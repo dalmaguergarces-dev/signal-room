@@ -164,23 +164,32 @@ def analyze(meta, depth=None):
     chop = choppiness(cs, 14)
 
     conf = min(100, round(abs(score) / max_pts * 100))
-    signal = "LONG" if score >= max_pts * .42 else "SHORT" if score <= -max_pts * .42 else "WAIT"
+    # A+ setups only: strong score AND trend (EMA 20/50) and bias (EMA 200) agree.
+    quality = .6
+    above200 = price > e200[-1]
+    if score >= max_pts * quality and up and above200:
+        signal = "LONG"
+    elif score <= -max_pts * quality and dn and not above200:
+        signal = "SHORT"
+    else:
+        signal = "WAIT"
     if chop > 61.8 and signal != "WAIT":
         signal = "WAIT"
     if meta.get("kind") != "crypto" and not meta.get("open"):
         signal = "CLOSED"
     d = -1 if signal == "SHORT" else 1
-    risk = 1.5 * A
-    stop, tp1 = price - d * risk, price + d * 3 * risk
+    # Swing targets: stop 2 ATR away; Target 1 at 3R, Target 2 at 6R.
+    risk, rr1, rr2 = 2 * A, 3, 6
+    stop, tp1, tp2 = price - d * risk, price + d * rr1 * risk, price + d * rr2 * risk
     rr_block = None
     if signal in ("LONG", "SHORT"):
         levels = [(z["bot"] if d == 1 else z["top"]) for z in allz if not z["filled"] and z["type"] == -d]
         if d == 1:
-            levels = [lv for lv in levels if price * 1.0005 < lv < price + 2 * risk]
+            levels = [lv for lv in levels if price * 1.0005 < lv < price + rr1 * risk]
         else:
-            levels = [lv for lv in levels if price - 2 * risk < lv < price * .9995]
+            levels = [lv for lv in levels if price - rr1 * risk < lv < price * .9995]
         if levels:
             rr_block = min(levels, key=lambda lv: abs(lv - price))
             signal = "WAIT"
     return {"price": price, "score": score, "conf": conf, "signal": signal, "A": A,
-            "stop": stop, "tp1": tp1, "dir": d, "chop": chop, "rr_block": rr_block}
+            "stop": stop, "tp1": tp1, "tp2": tp2, "dir": d, "chop": chop, "rr_block": rr_block}

@@ -352,7 +352,7 @@ function load(k,d){try{const v=localStorage.getItem("sr_"+k);return v==null?d:JS
 function save(k,v){try{localStorage.setItem("sr_"+k,JSON.stringify(v))}catch{}}
 const S = {
   watch: (()=>{const w=load("watch",DEFAULT_WATCH); if(!load("v2",false)){["PAXG","GC=F","SI=F","CL=F","EURUSD=X"].forEach(s=>{if(!w.includes(s))w.splice(3,0,s)}); save("watch",w); save("v2",true)} return w})(),
-  tf: load("tf","15m"),
+  tf: (()=>{ if(!load("v4",false)){ save("tf","4h"); save("v4",true) } return load("tf","4h") })(),
   sel: load("sel","BTC"),
   acct: load("acct",1000), risk: load("risk",1), maxLev: load("maxLev",100),
   fomo: load("fomo",""), broker: load("broker",""),
@@ -420,18 +420,23 @@ function analyze(sym){
 
   const score=F.reduce((s,f)=>s+f.pts,0);
   const conf=Math.min(100,Math.round(Math.abs(score)/maxPts*100));
-  let signal = score>=maxPts*.42?"LONG":score<=-maxPts*.42?"SHORT":"WAIT";
+  // A+ setups only: a strong score AND the trend (EMA 20/50) and big-picture bias (EMA 200)
+  // both pointing the same way. Fewer calls, higher quality.
+  const QUALITY=.6, trendPts=F[0].pts, biasPts=F[1].pts;
+  let signal = score>=maxPts*QUALITY && trendPts>0 && biasPts>0 ? "LONG"
+             : score<=-maxPts*QUALITY && trendPts<0 && biasPts<0 ? "SHORT" : "WAIT";
   const noisy=chop>61.8; if(noisy&&signal!=="WAIT") signal="WAIT";
   if(d.meta.kind!=="crypto"&&!d.meta.open) signal="CLOSED";
   const dir=signal==="SHORT"?-1:1;
-  // Always 3:1 reward-to-risk: stop 1.5 ATR away, target 3x that distance.
-  const risk=1.5*A, RR=3, stop=price-dir*risk, tp1=price+dir*RR*risk, tp2=tp1;
+  // Swing targets: stop 2 ATR away (room to breathe). Target 1 at 3R (take some profit),
+  // Target 2 at 6R (let the rest run).
+  const risk=2*A, RR=3, RR2=6, stop=price-dir*risk, tp1=price+dir*RR*risk, tp2=price+dir*RR2*risk;
   // Skip the call if an open opposing zone (sell zone for a long, buy zone for a short)
-  // sits within 2R, because price would likely stall there before reaching 3:1.
+  // sits before Target 1, because price would likely stall there.
   let rrBlock=null;
   if(signal==="LONG"||signal==="SHORT"){
     const opp=Z.fvg.concat(Z.ob).filter(z=>!z.filled&&z.type===-dir)
-      .map(z=>dir===1?z.bot:z.top).filter(lv=>dir===1?(lv>price*1.0005&&lv<price+2*risk):(lv<price*.9995&&lv>price-2*risk))
+      .map(z=>dir===1?z.bot:z.top).filter(lv=>dir===1?(lv>price*1.0005&&lv<price+RR*risk):(lv<price*.9995&&lv>price-RR*risk))
       .sort((p,q)=>Math.abs(p-price)-Math.abs(q-price));
     if(opp.length){rrBlock={level:opp[0],side:signal};signal="WAIT"}
   }
@@ -440,7 +445,7 @@ function analyze(sym){
   if(d.meta.kind==="crypto"){ ref=[...cs].reverse().find(x=>x.t<=lastT-864e5)||cs[0] }
   else { const day=new Date(lastT).toDateString(); ref=[...cs].reverse().find(x=>new Date(x.t).toDateString()!==day)||cs[0] }
   const chgDay=(price/ref.c-1)*100;
-  return {price,score,conf,signal,F,R,A,stop,tp1,tp2,RR,rrBlock,e20,e50,chg,chgDay,dir,Z,chop,noisy};
+  return {price,score,conf,signal,F,R,A,stop,tp1,tp2,RR,RR2,rrBlock,e20,e50,chg,chgDay,dir,Z,chop,noisy};
 }
 
 /* Fair value gaps (3-candle imbalance) and order blocks (last opposite candle before a
@@ -601,11 +606,12 @@ function checkAlert(sym){
 }
 function fireAlert(sym,a){
   const k=kellyFor(sym,a), side=a.signal==="LONG"?"Long":"Short", name=label(sym);
-  const body=`Entry ${fmt(a.price)} · Stop ${fmt(a.stop,a.price)} · Target 3:1 ${fmt(a.tp1,a.price)} · ${k.lev.toFixed(1)}x`;
+  const body=`Entry ${fmt(a.price)} · Stop ${fmt(a.stop,a.price)} · T1 ${fmt(a.tp1,a.price)} (3R) · T2 ${fmt(a.tp2,a.price)} (6R) · ${k.lev.toFixed(1)}x`;
   const el=document.createElement("div"); el.className="toast "+a.signal; el.setAttribute("role","alert");
   el.innerHTML=`<h3>${side} ${esc(name)}: trade is set</h3>
     <div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div>
-    <div><span>Target 3:1</span><strong>${fmt(a.tp1,a.price)}</strong></div><div><span>Leverage</span><strong>${k.lev.toFixed(1)}x</strong></div></div>
+    <div><span>Target 1 · 3R</span><strong>${fmt(a.tp1,a.price)}</strong></div><div><span>Target 2 · 6R</span><strong>${fmt(a.tp2,a.price)}</strong></div>
+    <div><span>Leverage</span><strong>${k.lev.toFixed(1)}x</strong></div></div>
     <div class="links"><button data-sym="${esc(sym)}" class="primary" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">View</button>${ENTROPY[sym]?`<a class="entropy" href="${entropyUrl(sym)}" target="_blank" rel="noopener">Entropy</a>`:""}<button data-dismiss>Dismiss</button></div>`;
   document.getElementById("toasts").prepend(el);
   // Fades out after 4 s if left alone. Touching, hovering or tabbing into it keeps it until dismissed.
@@ -691,12 +697,14 @@ function renderBots(sym,d,a){
   let say;
   if(a.signal==="CLOSED") say=`The ${esc(label(sym))} market is closed. I don't call trades on stale candles. Last close ${fmt(a.price)}.`;
   else if(active) say=`<b>Go ${side} ${esc(label(sym))}.</b> ${a.F.filter(f=>Math.sign(f.pts)===a.dir).map(f=>f.name.split(" (")[0].toLowerCase()).slice(0,4).join(", ")} line up on the ${S.tf}.`;
-  else if(a.rrBlock) say=`<b>Wait.</b> ${esc(label(sym))} leans ${a.rrBlock.side.toLowerCase()}, but a ${a.rrBlock.side==="LONG"?"sell":"buy"} zone at ${fmt(a.rrBlock.level,a.price)} sits in the way of a 3:1 target. I only call trades that can pay 3:1.`;
+  else if(a.rrBlock) say=`<b>Wait.</b> ${esc(label(sym))} leans ${a.rrBlock.side.toLowerCase()}, but a ${a.rrBlock.side==="LONG"?"sell":"buy"} zone at ${fmt(a.rrBlock.level,a.price)} sits before Target 1. I only call A+ trades with a clear path to 3R and beyond.`;
   else if(a.noisy) say=`<b>Wait, this is noise.</b> ${esc(label(sym))} is chopping sideways (chop index ${a.chop.toFixed(0)}). Moves inside the grey band mean nothing. I'll call it when it breaks out.`;
   else say=`<b>Wait.</b> Signals on ${esc(label(sym))} disagree (score ${a.score.toFixed(1)}). No edge here yet.`;
   atlas.innerHTML=botHead("Atlas")+`<div class="bsay">${say}</div>`+
     `<div class="meter" title="Confidence"><i style="width:${a.signal==="CLOSED"?0:a.conf}%"></i></div>`+
-    (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target 3:1</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>`:"")+
+    (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target 1 · 3R</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>
+    <div class="kv" style="grid-template-columns:2fr 1fr"><div><span>Target 2 · 6R (let it run)</span><strong>${fmt(a.tp2,a.price)}</strong></div><div><span>Plan</span><strong>½ off at T1</strong></div></div>
+    <div class="warn">Swing trade on the ${S.tf} chart: this can take days. Take half off at Target 1 and move the stop to entry, then let the rest run to Target 2.</div>`:"")+
     linksHtml(sym,true);
 
   // Kelly: leverage from risk budget and stop distance
@@ -706,7 +714,7 @@ function renderBots(sym,d,a){
   const loss=notional*stopPct;
   kelly.classList.toggle("hot",!!active);
   kelly.innerHTML=botHead("Kelly")+
-    `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong, and wins about <b>$${(loss*a.RR).toFixed(0)}</b> at the 3:1 target.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
+    `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong, and wins about <b>$${(loss*a.RR).toFixed(0)}</b> at Target 1 or <b>$${(loss*a.RR2).toFixed(0)}</b> at Target 2.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
     (active?`<div class="kv"><div><span>Leverage</span><strong>${lev.toFixed(1)}x</strong></div><div><span>Position</span><strong>$${notional.toFixed(0)}</strong></div><div><span>Liq. ≈</span><strong>${lev<=1?"none":fmt(liq,a.price)}</strong></div></div>`:"")+
     (raw>cap&&active?`<div class="warn">Math allowed ${raw.toFixed(1)}x but I cap at ${cap}x on ${K.label}.</div>`:"")+
     linksHtml(sym,false);
@@ -736,7 +744,7 @@ function drawChart(d,a){
   document.getElementById("zReset").hidden=view.off<1&&Math.round(view.n)===DEFAULT_BARS;
   const padR=70, volH=H*.18, top=46, bot=H-volH-18;
   let lo=Math.min(...cs.map(x=>x.l)), hi=Math.max(...cs.map(x=>x.h));
-  if(a.signal==="LONG"||a.signal==="SHORT"){lo=Math.min(lo,a.stop,a.tp1);hi=Math.max(hi,a.stop,a.tp1)}
+  if(a.signal==="LONG"||a.signal==="SHORT"){lo=Math.min(lo,a.stop,a.tp2);hi=Math.max(hi,a.stop,a.tp2)}
   const pad=(hi-lo)*.05; lo-=pad; hi+=pad;
   const y=p=>top+(hi-p)/(hi-lo)*(bot-top), cw=(W-padR)/n, x=i=>i*cw+cw/2; chartCw=cw;
   // grid + price labels
@@ -794,7 +802,7 @@ function drawChart(d,a){
   g.fillStyle=col("--muted"); g.fillText(n+" bars"+(view.off>=1?" · history":""),8,32);
   // trade levels
   if(a.signal==="LONG"||a.signal==="SHORT"){
-    [[a.price,col("--accent"),"ENTRY"],[a.stop,col("--short"),"STOP"],[a.tp1,col("--long"),"TARGET"]].forEach(([p,c,t])=>{
+    [[a.price,col("--accent"),"ENTRY"],[a.stop,col("--short"),"STOP"],[a.tp1,col("--long"),"T1 3R"],[a.tp2,col("--long"),"T2 6R"]].forEach(([p,c,t])=>{
       g.setLineDash([4,4]); g.strokeStyle=c; g.beginPath(); g.moveTo(0,y(p)); g.lineTo(W-padR,y(p)); g.stroke(); g.setLineDash([]);
       g.fillStyle=c; g.fillRect(W-padR,y(p)-8,padR,16); g.fillStyle="#111"; g.fillText(t,W-padR+6,y(p)+4)});
   }

@@ -279,7 +279,7 @@ def handle_to_name(handle):
 # Topic names are derived from OWNER_KEY so outsiders can't guess them.
 PUSH = os.environ.get("PUSH", "on").lower() != "off"
 NTFY = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-ALERT_TF = os.environ.get("ALERT_TF", "15m")
+ALERT_TF = os.environ.get("ALERT_TF", "4h")  # swing trades: fewer, bigger calls
 ALERT_MARKETS = [s.strip().upper() for s in os.environ.get(
     "ALERT_MARKETS", "BTC,ETH,SOL,PAXG,GC=F,SI=F,CL=F,EURUSD=X,SPY,QQQ,TSLA,NVDA,AAPL").split(",") if s.strip()]
 PUBLIC_URL = os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
@@ -325,7 +325,8 @@ def scan_once():
         lev = max(1.0, min(CAPS.get(meta["kind"], 4), int(0.01 / stop_pct * 10) / 10))
         side = "Long" if a["signal"] == "LONG" else "Short"
         f = lambda x: f"{x:,.2f}" if abs(a['price']) >= 50 else f"{x:,.4f}"
-        msg = (f"Entry {f(a['price'])} · Stop {f(a['stop'])} · Target 3:1 {f(a['tp1'])}\n"
+        msg = (f"Entry {f(a['price'])} · Stop {f(a['stop'])}\n"
+               f"Target 1 (3R) {f(a['tp1'])} · Target 2 (6R) {f(a['tp2'])}\n"
                f"Leverage {lev:.1f}x (1% risk) · confidence {a['conf']}% · {ALERT_TF} chart")
         title = f"{side} {name}: trade is set"
         tags = "green_circle" if side == "Long" else "red_circle"
