@@ -294,6 +294,12 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
       <p class="kmuted">Put this link in your TikTok bio. Followers get their own key there instantly.</p>
       <div class="field"><label for="suLink">Key page link</label><input id="suLink" readonly></div>
       <div class="links"><button type="button" id="suCopy">Copy link</button></div>
+      <div id="reqBox" hidden>
+        <h2 style="font-size:17px;margin:16px 0 6px">Key requests</h2>
+        <p class="kmuted">Tap an @ to open their TikTok and check they follow you. Then approve or deny. Nobody gets a key without your OK.</p>
+        <p class="kmuted" id="reqTopicWrap" hidden>Get a phone alert for each new request: subscribe in ntfy to <input id="reqTopic" readonly style="font:12px var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 6px;color:var(--fg);width:15em;max-width:100%"> <button type="button" class="hbtn" data-copytopic="" id="reqTopicCopy" style="padding:4px 8px">Copy</button></p>
+        <ul id="reqList" style="list-style:none;margin:0;padding:0;display:grid;gap:8px;max-height:260px;overflow:auto"></ul>
+      </div>
       <p class="kmuted" style="margin-top:12px">New since the server last started. Tap an @ to check they follow you. To block one, add their @ to <b>REVOKED</b> (dots become _).</p>
       <ul id="suList" style="list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:200px;overflow:auto"></ul>
       <h2 style="font-size:17px;margin:16px 0 6px">Key use today</h2>
@@ -513,12 +519,27 @@ document.getElementById("settingsBtn").addEventListener("click",loadPush);
     const box=document.getElementById("suBox"); box.hidden=!j.signup; if(!j.signup) return;
     document.getElementById("suLink").value=location.origin+"/get-key";
     document.getElementById("suList").innerHTML=j.recent.length?j.recent.map(r=>`<li style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><a href="https://www.tiktok.com/@${encodeURIComponent(r.handle)}" target="_blank" rel="noopener" style="color:var(--fg)">@${esc(r.handle)}</a><span style="color:var(--muted)">${r.blocked?"blocked · ":""}${new Date(r.t).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</span></li>`).join(""):`<li class="kmuted">No sign-ups yet.</li>`;
+    const rb=document.getElementById("reqBox"); rb.hidden=!j.approval;
+    if(j.approval){
+      if(j.owner_topic){document.getElementById("reqTopicWrap").hidden=false;document.getElementById("reqTopic").value=j.owner_topic;document.getElementById("reqTopicCopy").dataset.copytopic=j.owner_topic}
+      const reqs=j.requests||[];
+      document.getElementById("reqList").innerHTML=reqs.length?reqs.map(r=>`<li style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px">
+        <a href="https://www.tiktok.com/@${encodeURIComponent(r.handle)}" target="_blank" rel="noopener" style="color:var(--fg);font-weight:600;flex:1;min-width:8em">@${esc(r.handle)}</a>
+        ${r.status==="pending"?`<button type="button" class="hbtn" data-req="${esc(r.id)}" data-act="approve" style="border-color:var(--long);color:var(--long)">Approve</button><button type="button" class="hbtn" data-req="${esc(r.id)}" data-act="deny" style="border-color:var(--short);color:var(--short)">Deny</button>`
+          :`<span style="color:var(--muted)">${r.status==="denied"?"denied":"approved"}</span>`}</li>`).join(""):`<li class="kmuted">No requests right now.</li>`;
+    }
     const act=j.activity||[];
     document.getElementById("actList").innerHTML=act.length?act.map(r=>{
       const tag=r.blocked?["blocked","var(--muted)"]:r.locked?["locked today","var(--short)"]:r.places>=3||r.logins>=3?["possibly shared","var(--accent)"]:["ok","var(--long)"];
       return `<li style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><span style="font-weight:600">${esc(r.name)}</span><span style="color:var(--muted)">${r.logins} logins · ${r.places} places · <b style="color:${tag[1]}">${tag[0]}</b></span></li>`}).join(""):`<li class="kmuted">No member logins yet today.</li>`;
   }
   document.getElementById("suCopy").addEventListener("click",e=>copy("suLink",e.target));
+  document.getElementById("reqList").addEventListener("click",async e=>{
+    const b=e.target.closest("[data-req]"); if(!b) return; b.disabled=true;
+    await fetch("/api/requests",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.req,action:b.dataset.act})}).catch(()=>{});
+    loadSignups();
+  });
+  setInterval(()=>{ if(dlgK.open) loadSignups() },15000);
   btn.addEventListener("click",()=>{document.getElementById("kOut").hidden=true;loadSignups();dlgK.showModal();document.getElementById("kName").focus()});
   document.getElementById("kClose").addEventListener("click",()=>dlgK.close());
   document.getElementById("keysForm").addEventListener("submit",async e=>{

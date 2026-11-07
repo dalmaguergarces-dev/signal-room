@@ -196,6 +196,10 @@ LOGINS_PER_DAY = max(2, int(os.environ.get("LOGINS_PER_DAY", "6")))
 _active = {}   # name -> [session ids], newest last
 _logins = {}   # name -> [(time, ip)]
 _issued = set()  # TikTok names that got a key from /get-key since the server started
+# APPROVAL=on (default): /get-key only sends a request. Nobody gets a key until the
+# owner has checked on TikTok that they follow and tapped Approve.
+APPROVAL = os.environ.get("APPROVAL", "on").lower() != "off"
+_requests = {}   # request id -> {handle, name, t, ip, status: pending/approved/denied/delivered}
 
 
 def logins_today(name):
@@ -386,12 +390,12 @@ def page(body_html):
 def getkey_form(err=""):
     return page(f"""<form method="post" action="/get-key">
 <img src="/avatar.png" alt=""><h1>Get your key</h1>
-<p>Free for followers of DoNoJob.</p>
+<p>Free for followers of DoNoJob. {"@" + TIKTOK + " checks that you follow, then approves your key." if APPROVAL else ""}</p>
 <a class="follow" href="https://www.tiktok.com/@{TIKTOK}" target="_blank" rel="noopener">Follow @{TIKTOK} on TikTok</a>
 <input name="handle" autocomplete="username" placeholder="your TikTok @" aria-label="Your TikTok username" required maxlength="25">
 <label class="check"><input type="checkbox" name="follows" required> I follow @{TIKTOK}. Keys of people who don't follow get blocked.</label>
 <label class="check"><input type="checkbox" name="risk" required> I understand the signals are automated, often wrong and not financial advice. Leverage can wipe out my whole position. I trade at my own risk.</label>
-<button type="submit">Get my key</button>
+<button type="submit">{"Request my key" if APPROVAL else "Get my key"}</button>
 <div class="err" role="alert">{err}</div>
 <p class="alt">Already have a key? <a href="/login">Log in</a></p></form>""")
 
@@ -405,6 +409,25 @@ def getkey_done(handle, key):
 <a href="/"><button type="button">Enter the room</button></a>
 <p class="small">Don't share it. It's tied to your @, and if it gets passed around it gets blocked.</p>
 <script>document.getElementById("c").onclick=function(){{var b=this;navigator.clipboard&&navigator.clipboard.writeText(document.getElementById("k").textContent).then(function(){{b.textContent="Copied"}})}}</script>""")
+
+
+def getkey_wait(handle, status):
+    if status == "denied":
+        return page(f"""<img src="/avatar.png" alt=""><h1>Not approved</h1>
+<p>@{handle} wasn't approved. Make sure you follow @{TIKTOK} on TikTok, then send a new request.</p>
+<a class="follow" href="https://www.tiktok.com/@{TIKTOK}" target="_blank" rel="noopener">Follow @{TIKTOK}</a>
+<a href="/get-key?new=1"><button type="button">Send a new request</button></a>""")
+    return page(f"""<img src="/avatar.png" alt=""><h1>Request sent</h1>
+<p>@{TIKTOK} is checking that <b>@{handle}</b> follows on TikTok. Your key appears here as soon as you're approved.</p>
+<div class="keybox" id="st">Waiting for approval…</div>
+<p class="small">You can close this page and come back to this link later on the same phone.</p>
+<script>
+async function poll(){{try{{const r=await fetch("/get-key/status",{{cache:"no-store"}});const j=await r.json();
+if(j.status==="approved"||j.status==="denied"){{location.reload();return}}
+if(j.status==="gone"){{document.getElementById("st").textContent="This request expired. Please send a new one.";return}}}}catch(e){{}}
+setTimeout(poll,8000)}}
+setTimeout(poll,8000);
+</script>""")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -483,13 +506,50 @@ class Handler(BaseHTTPRequestHandler):
         if len(recent) >= 5:
             return html("Too many keys from this connection. Try again in an hour.", 429)
         _signup_ips[ip] = recent + [now]
+        if APPROVAL:
+            if any(r["name"] == name and r["status"] == "pending" for r in _requests.values()):
+                return html("This @ already has a request waiting. Hang tight, it'll be checked soon.", 409)
+            rid = secrets.token_hex(12)
+            _requests[rid] = {"handle": handle, "name": name, "t": now, "ip": ip, "status": "pending"}
+            for old in sorted(_requests, key=lambda k: _requests[k]["t"])[:-300]:
+                _requests.pop(old, None)
+            print(f"[request] key requested by @{handle}", flush=True)
+            if PUSH:
+                try:
+                    push(topic_for("OWNER"), f"New key request: @{handle}",
+                         "Check they follow you, then approve or deny in your Keys panel.", 4, "key")
+                except Exception as e:
+                    _push_state["error"] = f"owner push: {type(e).__name__}: {e}"
+            return self.send(200, getkey_wait(handle, "pending"), "text/html; charset=utf-8",
+                             {"Set-Cookie": self.cookie_for(rid, 7 * 86400, "sr_req")})
+        return self.issue_key(handle, name, ip)
+
+    def issue_key(self, handle, name, ip):
+        now = time.time()
         key = friend_key(name)
         _issued.add(name)
         _signups.append((now, handle))
         del _signups[:-200]
         print(f"[signup] key issued to @{handle}", flush=True)
-        self.send(200, getkey_done(handle, key), "text/html; charset=utf-8",
-                  {"Set-Cookie": self.cookie_for(new_session("friend", name, ip))})
+        return self.send(200, getkey_done(handle, key), "text/html; charset=utf-8",
+                         {"Set-Cookie": self.cookie_for(new_session("friend", name, ip))})
+
+    def my_request(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "sr_req":
+                return v, _requests.get(urllib.parse.unquote(v))
+        return None, None
+
+    def get_key_page(self, qs):
+        rid, req = self.my_request()
+        if req and not qs.get("new"):
+            if req["status"] == "approved":  # deliver the key once, on this device only
+                req["status"] = "delivered"
+                return self.issue_key(req["handle"], req["name"], self.ip())
+            if req["status"] in ("pending", "denied"):
+                return self.send(200, getkey_wait(req["handle"], req["status"]), "text/html; charset=utf-8")
+        return self.send(200, getkey_form(), "text/html; charset=utf-8")
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
@@ -524,6 +584,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps({"ok": True}))
             except Exception as e:
                 return self.send(502, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        if u.path == "/api/requests":
+            if me[0] != "owner":
+                return self.send(403, json.dumps({"error": "Only the owner can approve keys."}))
+            try:
+                d = json.loads(body or "{}")
+            except ValueError:
+                d = {}
+            req = _requests.get(str(d.get("id", "")))
+            if not req or req["status"] != "pending":
+                return self.send(404, json.dumps({"error": "That request is gone or already handled."}))
+            req["status"] = "approved" if d.get("action") == "approve" else "denied"
+            print(f"[request] @{req['handle']} {req['status']}", flush=True)
+            return self.send(200, json.dumps({"ok": True, "status": req["status"]}))
         if u.path == "/api/keys":
             if me[0] != "owner":
                 return self.send(403, json.dumps({"error": "Only the owner can make keys."}))
@@ -558,7 +631,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/get-key":
                 if not SIGNUP:
                     return self.redirect("/login")
-                return self.send(200, getkey_form(), "text/html; charset=utf-8")
+                return self.get_key_page(qs)
+            if u.path == "/get-key/status":
+                _, req = self.my_request()
+                return self.send(200, json.dumps({"status": req["status"] if req else "gone"}))
             if u.path == "/logout":
                 return self.redirect("/login", [self.cookie_for("", 0), self.cookie_for("", 0, "sr_key")])
             # ---- key required from here on
@@ -584,7 +660,11 @@ class Handler(BaseHTTPRequestHandler):
                 if me[0] != "owner":
                     return self.send(403, json.dumps({"error": "Only the owner can see sign-ups."}))
                 return self.send(200, json.dumps({
-                    "signup": SIGNUP, "tiktok": TIKTOK,
+                    "signup": SIGNUP, "tiktok": TIKTOK, "approval": APPROVAL,
+                    "owner_topic": topic_for("OWNER") if PUSH else "",
+                    "requests": [{"id": k, "handle": r["handle"], "t": int(r["t"] * 1000), "status": r["status"]}
+                                 for k, r in sorted(_requests.items(), key=lambda kv: -kv[1]["t"])
+                                 if r["status"] == "pending" or time.time() - r["t"] < 86400][:100],
                     "recent": [{"t": int(t * 1000), "handle": h,
                                 "blocked": handle_to_name(h) in REVOKED} for t, h in reversed(_signups)],
                     "activity": sorted([{"name": n, "logins": len(logins_today(n)),
