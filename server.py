@@ -196,9 +196,10 @@ LOGINS_PER_DAY = max(2, int(os.environ.get("LOGINS_PER_DAY", "6")))
 _active = {}   # name -> [session ids], newest last
 _logins = {}   # name -> [(time, ip)]
 _issued = set()  # TikTok names that got a key from /get-key since the server started
-# APPROVAL=on (default): /get-key only sends a request. Nobody gets a key until the
-# owner has checked on TikTok that they follow and tapped Approve.
-APPROVAL = os.environ.get("APPROVAL", "on").lower() != "off"
+# APPROVAL=off (default): /get-key hands out a key instantly, one per @.
+# APPROVAL=on: /get-key only sends a request; nobody gets a key until the owner
+# has checked on TikTok that they follow and tapped Approve in the Keys panel.
+APPROVAL = os.environ.get("APPROVAL", "off").lower() == "on"
 _requests = {}   # request id -> {handle, name, t, ip, status: pending/approved/denied/delivered}
 
 
