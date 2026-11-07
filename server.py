@@ -158,12 +158,14 @@ REVOKED = {n.strip().lower() for n in os.environ.get("REVOKED", "").split(",") i
 NAME_RE = re.compile(r"^[a-z0-9_]{1,24}$")
 
 
-def sign(name):
-    return hmac.new(OWNER_KEY.encode(), b"friend:" + name.encode(), hashlib.sha256).hexdigest()[:16]
+def _mac(msg, n):
+    return hmac.new(OWNER_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()[:n]
 
 
 def friend_key(name):
-    return f"{name}-{sign(name)}"
+    """Every key is unique: name + random part + signature. Nothing is stored."""
+    nonce = secrets.token_hex(3)
+    return f"{name}-{nonce}{_mac(f'friend2:{name}:{nonce}', 14)}"
 
 
 def check_key(key):
@@ -173,11 +175,60 @@ def check_key(key):
         return None
     if hmac.compare_digest(key.encode(), OWNER_KEY.encode()):
         return ("owner", "DoNoJob")
-    name, _, sig = key.rpartition("-")
-    name = name.lower()
-    if NAME_RE.match(name) and name not in REVOKED and hmac.compare_digest(sig.lower().encode(), sign(name).encode()):
+    name, _, tail = key.rpartition("-")
+    name, tail = name.lower(), tail.lower()
+    if len(tail) != 20 or not NAME_RE.match(name) or name in REVOKED:
+        return None
+    nonce, sig = tail[:6], tail[6:]
+    if hmac.compare_digest(sig.encode(), _mac(f"friend2:{name}:{nonce}", 14).encode()):
         return ("friend", name)
     return None
+
+
+# ------------------------------------------------- anti-sharing: one device per key
+# Logging in gives the device a signed session. A member's newest login wins: older
+# devices on the same name are logged out. Sharing a key means people keep kicking
+# each other out. Too many logins in a day locks the key for the rest of the day and
+# flags it in the owner's Keys panel. The owner is never limited.
+# Kept in memory: after a restart the first device to come back is accepted.
+MAX_DEVICES = max(1, int(os.environ.get("MAX_DEVICES", "1")))
+LOGINS_PER_DAY = max(2, int(os.environ.get("LOGINS_PER_DAY", "6")))
+_active = {}   # name -> [session ids], newest last
+_logins = {}   # name -> [(time, ip)]
+_issued = set()  # TikTok names that got a key from /get-key since the server started
+
+
+def logins_today(name):
+    now = time.time()
+    _logins[name] = [(t, ip) for t, ip in _logins.get(name, []) if now - t < 86400]
+    return _logins[name]
+
+
+def new_session(role, name, ip):
+    sid = secrets.token_hex(8)
+    if role == "friend":
+        _active[name] = (_active.get(name, []) + [sid])[-MAX_DEVICES:]
+        _logins.setdefault(name, []).append((time.time(), ip))
+    return f"{role}.{name}.{sid}.{_mac(f'sess:{role}:{name}:{sid}', 20)}"
+
+
+def check_session(value):
+    parts = (value or "").split(".")
+    if len(parts) != 4:
+        return None
+    role, name, sid, sig = parts
+    if role not in ("owner", "friend") or not hmac.compare_digest(sig.encode(), _mac(f"sess:{role}:{name}:{sid}", 20).encode()):
+        return None
+    if role == "owner":
+        return ("owner", "DoNoJob")
+    if name in REVOKED:
+        return None
+    act = _active.get(name)
+    if act is None:          # server restarted: first device back is accepted
+        _active[name] = [sid]
+    elif sid not in act:
+        return ("kicked", name)
+    return ("friend", name)
 
 
 # ------------------------------------------------------------ instant key page
@@ -367,31 +418,41 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        for k, v in (headers or {}).items():
+        for k, v in (headers.items() if isinstance(headers, dict) else (headers or [])):
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
 
     def redirect(self, where, cookie=None):
-        h = {"Location": where}
-        if cookie is not None:
-            h["Set-Cookie"] = cookie
+        h = [("Location", where)]
+        for c in ([cookie] if isinstance(cookie, str) else (cookie or [])):
+            h.append(("Set-Cookie", c))
         self.send(303, b"", "text/plain", h)
 
     def ip(self):
         return (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
 
-    def cookie_for(self, key, max_age=31536000):
-        c = f"sr_key={urllib.parse.quote(key)}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"
+    def cookie_for(self, value, max_age=31536000, name="sr_s"):
+        c = f"{name}={urllib.parse.quote(value)}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"
         return c + ("; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else "")
 
     def who(self):
+        """(role, name) for a logged-in device; ("kicked", name) if another device took over."""
+        jar = {}
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "sr_key":
-                return check_key(urllib.parse.unquote(v))
+            jar[k] = urllib.parse.unquote(v)
+        if "sr_s" in jar:
+            return check_session(jar["sr_s"])
+        if "sr_key" in jar:  # older login cookie: still valid for the owner only
+            r = check_key(jar["sr_key"])
+            return r if r and r[0] == "owner" else None
         return None
+
+    def me(self):
+        r = self.who()
+        return r if r and r[0] != "kicked" else None
 
     def static(self, name, ctype):
         with open(os.path.join(HERE, name), "rb") as f:
@@ -413,6 +474,8 @@ class Handler(BaseHTTPRequestHandler):
         if not (f.get("follows") and f.get("risk")):
             return html("Tick both boxes to continue.", 400)
         name = handle_to_name(handle)
+        if name in _issued:
+            return html("This @ already has a key. Each person gets one. If it's yours and you lost it, message @" + TIKTOK + " on TikTok.", 409)
         if name in REVOKED:
             return html("This @ is blocked. Message @" + TIKTOK + " on TikTok if you think that's a mistake.", 403)
         ip, now = self.ip(), time.time()
@@ -421,11 +484,12 @@ class Handler(BaseHTTPRequestHandler):
             return html("Too many keys from this connection. Try again in an hour.", 429)
         _signup_ips[ip] = recent + [now]
         key = friend_key(name)
+        _issued.add(name)
         _signups.append((now, handle))
         del _signups[:-200]
         print(f"[signup] key issued to @{handle}", flush=True)
         self.send(200, getkey_done(handle, key), "text/html; charset=utf-8",
-                  {"Set-Cookie": self.cookie_for(key)})
+                  {"Set-Cookie": self.cookie_for(new_session("friend", name, ip))})
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
@@ -436,16 +500,21 @@ class Handler(BaseHTTPRequestHandler):
             if too_many_fails(ip):
                 return self.login_page("Too many wrong keys. Try again in 10 minutes.", 429)
             key = dict(urllib.parse.parse_qsl(body)).get("key", "").strip()
-            if check_key(key):
+            r = check_key(key)
+            if r:
                 _fails.pop(ip, None)
-                return self.redirect("/", self.cookie_for(key))
+                if r[0] == "friend" and len(logins_today(r[1])) >= LOGINS_PER_DAY:
+                    print(f"[sharing] key for {r[1]} locked for today", flush=True)
+                    return self.login_page("This key was used on too many devices today, so it's locked until tomorrow. "
+                                           "Keys are personal. If yours got shared, message @" + TIKTOK + " for a new one.", 429)
+                return self.redirect("/", [self.cookie_for(new_session(r[0], r[1], ip)), self.cookie_for("", 0, "sr_key")])
             _fails.setdefault(ip, []).append(time.time())
             return self.login_page("That key doesn't work. Check it and try again.", 401)
         if u.path == "/get-key":
             return self.get_key(body)
         me = self.who()
-        if not me:
-            return self.send(401, json.dumps({"error": "locked"}))
+        if not me or me[0] == "kicked":
+            return self.send(401, json.dumps({"error": me[0] if me else "locked"}))
         if u.path == "/api/push/test":
             if me[0] != "owner":
                 return self.send(403, json.dumps({"error": "Only the owner can send a test."}))
@@ -481,19 +550,24 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/icon.png", "/apple-touch-icon.png", "/favicon.ico"):
                 return self.static("icon.png", "image/png")
             if u.path == "/login":
-                return self.redirect("/") if self.who() else self.login_page()
+                if self.me():
+                    return self.redirect("/")
+                why = ("You were logged out here because your key was just used on another device. "
+                       "Each key works on one device at a time.") if qs.get("why") == "kicked" else ""
+                return self.login_page(why)
             if u.path == "/get-key":
                 if not SIGNUP:
                     return self.redirect("/login")
                 return self.send(200, getkey_form(), "text/html; charset=utf-8")
             if u.path == "/logout":
-                return self.redirect("/login", self.cookie_for("", 0))
+                return self.redirect("/login", [self.cookie_for("", 0), self.cookie_for("", 0, "sr_key")])
             # ---- key required from here on
             me = self.who()
-            if not me:
+            if not me or me[0] == "kicked":
+                kicked = bool(me)
                 if u.path.startswith("/api/"):
-                    return self.send(401, json.dumps({"error": "locked"}))
-                return self.redirect("/login")
+                    return self.send(401, json.dumps({"error": "kicked" if kicked else "locked"}))
+                return self.redirect("/login?why=kicked" if kicked else "/login")
             if u.path in ("/", "/index.html"):
                 return self.static("index.html", "text/html; charset=utf-8")
             if u.path == "/api/me":
@@ -512,7 +586,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps({
                     "signup": SIGNUP, "tiktok": TIKTOK,
                     "recent": [{"t": int(t * 1000), "handle": h,
-                                "blocked": handle_to_name(h) in REVOKED} for t, h in reversed(_signups)]}))
+                                "blocked": handle_to_name(h) in REVOKED} for t, h in reversed(_signups)],
+                    "activity": sorted([{"name": n, "logins": len(logins_today(n)),
+                                         "places": len({ip for _, ip in logins_today(n)}),
+                                         "locked": len(logins_today(n)) >= LOGINS_PER_DAY,
+                                         "blocked": n in REVOKED}
+                                        for n in list(_logins) if logins_today(n)],
+                                       key=lambda x: -x["logins"])}))
             if u.path == "/api/candles":
                 sym = qs.get("symbol", "BTC").upper()
                 tf = qs.get("tf", "15m")
