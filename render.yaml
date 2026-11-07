@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: signal-room
+    runtime: python
+    plan: free
+    buildCommand: "echo no dependencies"
+    startCommand: "python server.py"
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7

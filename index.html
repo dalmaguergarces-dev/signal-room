@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Signal Room</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Signal Room">
+<meta name="theme-color" content="#151c29">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: trading-floor room. Scanner on the left, chart + reasons in the middle, the three bots on the right, room chat underneath. */
+:root{
+  --bg:#0e131d; --panel:#151c29; --panel2:#1b2433; --line:#263247;
+  --fg:#dfe6f2; --muted:#8392aa; --accent:#f2b84b;
+  --long:#2fc49a; --short:#ef5f6b; --wait:#8a96ad; --big:#b48cff;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--body)}
+button,input,select{font:inherit;color:inherit}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px max(16px,2vw);border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font:800 22px/1 var(--display);letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.brand .dot{width:10px;height:10px;border-radius:50%;background:var(--long);box-shadow:0 0 0 0 var(--long);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,196,154,.6)}70%{box-shadow:0 0 0 8px rgba(47,196,154,0)}100%{box-shadow:0 0 0 0 rgba(47,196,154,0)}}
+@media (prefers-reduced-motion:reduce){.brand .dot{animation:none}}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:none;border:0;padding:6px 11px;cursor:pointer;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#1a1405;font-weight:600}
+.hbtn{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+.hbtn:hover,.seg button:hover{color:var(--fg)}
+.hbtn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.spacer{flex:1}
+.status{color:var(--muted);font-size:12px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+main{display:grid;grid-template-columns:300px minmax(0,1fr) 360px;gap:14px;padding:14px max(16px,2vw)}
+@media (max-width:1180px){main{grid-template-columns:280px minmax(0,1fr)}.room{grid-column:1/-1}}
+@media (max-width:760px){main{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;min-width:0}
+.ptitle{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 8px;font:600 11px/1 var(--body);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+
+/* Scanner */
+.scan{list-style:none;margin:0;padding:0 6px 6px}
+.scan li{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:9px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+.scan li:hover{background:var(--panel2)}
+.scan li[aria-selected="true"]{background:var(--panel2);border-color:var(--line)}
+.scan .sym{font-weight:600}
+.scan .sub{color:var(--muted);font-size:12px}
+.scan .x{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 0 0 6px;font-size:14px;visibility:hidden}
+.scan li:hover .x{visibility:visible}
+.pill{display:inline-block;min-width:58px;text-align:center;padding:3px 8px;border-radius:999px;font:600 11px/1.3 var(--mono);letter-spacing:.04em}
+.pill.LONG{background:rgba(47,196,154,.16);color:var(--long)}
+.pill.SHORT{background:rgba(239,95,107,.16);color:var(--short)}
+.pill.WAIT{background:rgba(138,150,173,.14);color:var(--wait)}
+.pill.CLOSED{background:transparent;color:var(--muted);border:1px dashed var(--line)}
+.add{display:flex;gap:6px;padding:8px 12px 14px}
+.add input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+
+/* Chart area */
+.focus{display:flex;flex-direction:column}
+.fhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;padding:14px 16px 4px}
+.fsym{font:800 30px/1 var(--display)}
+.fprice{font:600 22px/1 var(--mono)}
+.fchg{font:500 13px var(--mono)}
+.up{color:var(--long)}.down{color:var(--short)}
+.chartwrap{position:relative;height:360px;margin:6px 10px}
+canvas{width:100%;height:100%;display:block;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+canvas:active{cursor:grabbing}
+.layers{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px 0}
+.layers button{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--muted);font-size:12px;cursor:pointer}
+.layers button i{width:10px;height:10px;border-radius:3px;opacity:.35}
+.layers button[aria-pressed="true"]{color:var(--fg);background:var(--panel2)}
+.layers button[aria-pressed="true"] i{opacity:1}
+.zoom{position:absolute;top:6px;right:78px;display:flex;gap:6px}
+.zoom button{min-width:34px;height:34px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);font:600 17px/1 var(--mono);cursor:pointer;opacity:.92}
+.zoom button:hover{border-color:var(--accent)}
+#zReset{font-size:12px;color:var(--accent)}
+.reasons{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;padding:6px 14px 16px}
+.factor{background:var(--panel2);border-radius:8px;padding:9px 11px;border-left:3px solid var(--wait)}
+.factor.pos{border-left-color:var(--long)}.factor.neg{border-left-color:var(--short)}
+.factor .fn{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.factor .fv{font-family:var(--mono);font-size:13px;margin-top:2px}
+
+/* Bots */
+.room{display:flex;flex-direction:column;gap:12px;border:0;background:none}
+.bot{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.bot.hot{border-color:var(--accent)}
+.bhead{display:flex;gap:11px;align-items:center}
+.avatar{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font:800 17px var(--display);color:#111}
+.bname{font:700 16px/1.1 var(--display)}
+.brole{font-size:12px;color:var(--muted)}
+.bsay{font-size:14px;line-height:1.5}
+.bsay b{font-weight:600}
+.kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.kv div{background:var(--panel2);border-radius:8px;padding:7px 9px}
+.kv span{display:block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.kv strong{font:600 13px var(--mono)}
+.links{display:flex;flex-wrap:wrap;gap:6px}
+.links a,.links button{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);text-decoration:none;font-size:13px;cursor:pointer}
+.links a:hover,.links button:hover{border-color:var(--accent)}
+.links a.primary{background:var(--accent);color:#1a1405;border-color:var(--accent);font-weight:600}
+.meter{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .4s}
+.warn{font-size:12px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px}
+
+/* Chat */
+.chat{grid-column:1/-1}
+.feed{list-style:none;margin:0;padding:0 14px 14px;max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.feed li{display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:baseline;font-size:13px}
+.feed time{color:var(--muted);font:12px var(--mono)}
+.feed .who{font-weight:600}
+.feed button{background:none;border:0;padding:0;color:var(--accent);cursor:pointer;text-decoration:underline}
+
+/* Settings drawer */
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:14px;padding:20px;max-width:min(520px,92vw)}
+dialog::backdrop{background:rgba(5,8,14,.7)}
+dialog h2{font:800 20px var(--display);margin:0 0 12px}
+.field{display:grid;gap:4px;margin-bottom:12px}
+.field label{font-size:12px;color:var(--muted)}
+.field input{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.field small{color:var(--muted);font-size:12px}
+.disclaimer{color:var(--muted);font-size:12px;padding:0 max(16px,2vw) 24px;max-width:900px}
+
+/* ---------- Phone layout (iPhone) ---------- */
+@media (max-width:760px){
+  html{-webkit-text-size-adjust:100%}
+  body{padding-bottom:env(safe-area-inset-bottom,0px)}
+  header{position:sticky;top:0;z-index:20;gap:10px;
+    padding:calc(10px + env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-right,0px)) 10px max(14px,env(safe-area-inset-left,0px))}
+  .brand{font-size:19px}
+  .spacer{display:none}
+  .status{order:2;margin-left:auto;font-size:11px;max-width:45%;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .seg{order:3;width:100%;display:grid;grid-template-columns:repeat(5,1fr)}
+  .seg button{padding:9px 0}
+  #soundBtn,#settingsBtn{order:4;flex:1;padding:9px 12px}
+  main{gap:12px;padding:12px max(12px,env(safe-area-inset-left,0px)) 12px max(12px,env(safe-area-inset-right,0px))}
+  /* scanner becomes a swipeable row of chips */
+  .scan{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;padding:0 12px 10px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .scan::-webkit-scrollbar{display:none}
+  .scan li{flex:0 0 auto;width:148px;scroll-snap-align:start;background:var(--panel2);grid-template-columns:1fr auto;padding:10px}
+  .scan li[aria-selected="true"]{border-color:var(--accent)}
+  .scan .x{visibility:visible;padding:0 0 0 4px}
+  .scan li>span:nth-child(2){white-space:nowrap}
+  .scan li>span:nth-child(3){grid-column:1/-1}
+  .scan li>span:nth-child(4){display:none}
+  .scan .pill{min-width:0}
+  .add{padding:0 12px 12px}
+  .add input,.add button{padding:10px 12px;font-size:16px} /* 16px stops iOS zoom-on-focus */
+  .fhead{padding:12px 14px 2px}
+  .fsym{font-size:24px}.fprice{font-size:18px}
+  .chartwrap{height:250px;margin:4px 6px}
+  .reasons{grid-template-columns:1fr 1fr;padding:6px 10px 12px;gap:6px}
+  .factor{padding:8px 9px}
+  .factor .fv{font-size:12px}
+  .bot{padding:13px}
+  .links a,.links button{padding:10px 14px;min-height:42px;display:inline-flex;align-items:center}
+  .links a.primary{flex:1;justify-content:center}
+  .feed{max-height:none}
+  .feed li{grid-template-columns:auto 1fr;gap:2px 8px}
+  .feed li>span:last-child{grid-column:1/-1}
+  .field input{font-size:16px;padding:10px}
+  dialog{width:92vw}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="liveDot"></span>Signal Room</div>
+  <div class="seg" id="tfSeg" role="group" aria-label="Timeframe"></div>
+  <button class="hbtn" id="soundBtn" aria-pressed="false">Sound off</button>
+  <button class="hbtn" id="settingsBtn">Settings</button>
+  <span class="spacer"></span>
+  <span class="status" id="status">Connecting…</span>
+</header>
+
+<main>
+  <section class="panel" aria-label="Watchlist scanner">
+    <div class="ptitle"><span>Scanner</span><span id="scanCount"></span></div>
+    <ul class="scan" id="scan" role="listbox" aria-label="Watchlist"></ul>
+    <form class="add" id="addForm">
+      <input id="addInput" placeholder="Add ticker: AAPL, ETH, ^GSPC" aria-label="Add a ticker">
+      <button class="hbtn" type="submit">Add</button>
+    </form>
+  </section>
+
+  <section class="panel focus" aria-label="Selected chart">
+    <div class="fhead">
+      <span class="fsym" id="fSym">—</span>
+      <span class="fprice" id="fPrice"></span>
+      <span class="fchg" id="fChg"></span>
+      <span class="spacer"></span>
+      <span class="pill WAIT" id="fPill">…</span>
+    </div>
+    <div class="layers" role="group" aria-label="Chart layers">
+      <button data-layer="fvg"><i style="background:linear-gradient(90deg,var(--long) 50%,var(--short) 50%)"></i>Fair value gaps</button>
+      <button data-layer="big"><i style="background:var(--big)"></i>Big money</button>
+      <button data-layer="noise"><i style="background:var(--wait)"></i>Noise</button>
+    </div>
+    <div class="chartwrap">
+      <canvas id="chart" aria-label="Price chart. Pinch or scroll to zoom, drag to move back in time."></canvas>
+      <div class="zoom" role="group" aria-label="Chart zoom">
+        <button id="zOut" aria-label="Zoom out">−</button>
+        <button id="zIn" aria-label="Zoom in">+</button>
+        <button id="zReset" aria-label="Back to latest" hidden>Now</button>
+      </div>
+    </div>
+    <div class="ptitle"><span>Why the analyst thinks this</span><span id="scoreTxt" class="num"></span></div>
+    <div class="reasons" id="reasons"></div>
+  </section>
+
+  <section class="room" aria-label="The bots">
+    <article class="bot" id="botAtlas"></article>
+    <article class="bot" id="botKelly"></article>
+    <article class="bot" id="botRed"></article>
+  </section>
+
+  <section class="panel chat" aria-label="Room chat">
+    <div class="ptitle"><span>Room chat · live signal calls</span><span class="num" id="clock"></span></div>
+    <ul class="feed" id="feed"></ul>
+  </section>
+</main>
+
+<p class="disclaimer">These bots run rule-based technical analysis (trend, RSI, MACD, volume, order flow, VWAP, ATR). They don't predict the future and nobody, human or bot, is ever "so sure". Signals are often wrong. This is a tool, not financial advice. Stock data from Yahoo can lag by a few minutes, and stocks only produce signals while their market is open.</p>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h2>Settings</h2>
+    <div class="field"><label for="sAcct">Account size (USD)</label><input id="sAcct" type="number" min="1" step="1"></div>
+    <div class="field"><label for="sRisk">Risk per trade (% of account you lose if the stop hits)</label><input id="sRisk" type="number" min="0.1" max="10" step="0.1"><small>Kelly sizes leverage from this. 0.5–2% is common.</small></div>
+    <div class="field"><label for="sMax">Redline's leverage (x)</label><input id="sMax" type="number" min="2" max="200" step="1"></div>
+    <div class="field"><label for="sFomo">FOMO link (use {SYMBOL} where the ticker goes)</label><input id="sFomo" placeholder="https://…/{SYMBOL}"><small>Paste the web link of a coin page from your FOMO app and swap the ticker for {SYMBOL}.</small></div>
+    <div class="field"><label for="sBroker">Stock broker link (optional, {SYMBOL})</label><input id="sBroker" placeholder="https://…/{SYMBOL}"></div>
+    <div class="links"><button class="primary" value="save" id="saveSettings" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">Save</button><button value="cancel">Cancel</button></div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+/* ---------- persistent prefs (per browser) ---------- */
+const DEFAULT_WATCH = ["BTC","ETH","SOL","SPY","QQQ","TSLA","NVDA","AAPL"];
+const CRYPTO = new Set(["BTC","ETH","SOL","XRP","DOGE","BNB","AVAX","LINK"]);
+const TFS = ["5m","15m","1h","4h","1d"];
+function load(k,d){try{const v=localStorage.getItem("sr_"+k);return v==null?d:JSON.parse(v)}catch{return d}}
+function save(k,v){try{localStorage.setItem("sr_"+k,JSON.stringify(v))}catch{}}
+const S = {
+  watch: load("watch", DEFAULT_WATCH),
+  tf: load("tf","15m"),
+  sel: load("sel","BTC"),
+  acct: load("acct",1000), risk: load("risk",1), maxLev: load("maxLev",100),
+  fomo: load("fomo",""), broker: load("broker",""),
+  sound: false,
+  layers: load("layers",{fvg:true,big:true,noise:true}),
+};
+function renderLayers(){document.querySelectorAll("[data-layer]").forEach(b=>b.setAttribute("aria-pressed",!!S.layers[b.dataset.layer]))}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-layer]");if(!b)return;S.layers[b.dataset.layer]=!S.layers[b.dataset.layer];save("layers",S.layers);renderLayers();const d=data[S.sel];drawChart(d,d&&d.a)});
+const data = {};   // symbol -> {meta, candles, depth, a (analysis)}
+const lastSignal = {};
+
+/* ---------- indicators ---------- */
+function ema(arr,n){const k=2/(n+1);const out=[];let p;arr.forEach((x,i)=>{p=i===0?x:x*k+p*(1-k);out.push(p)});return out}
+function rsi(c,n=14){if(c.length<n+1)return 50;let g=0,l=0;for(let i=1;i<=n;i++){const d=c[i]-c[i-1];d>0?g+=d:l-=d}g/=n;l/=n;for(let i=n+1;i<c.length;i++){const d=c[i]-c[i-1];g=(g*(n-1)+Math.max(d,0))/n;l=(l*(n-1)+Math.max(-d,0))/n}return l===0?100:100-100/(1+g/l)}
+function atr(cs,n=14){const tr=cs.map((x,i)=>i===0?x.h-x.l:Math.max(x.h-x.l,Math.abs(x.h-cs[i-1].c),Math.abs(x.l-cs[i-1].c)));let a=tr.slice(0,n).reduce((s,x)=>s+x,0)/n;for(let i=n;i<tr.length;i++)a=(a*(n-1)+tr[i])/n;return a}
+
+function analyze(sym){
+  const d=data[sym]; if(!d||!d.candles||d.candles.length<60) return null;
+  const cs=d.candles, closes=cs.map(x=>x.c), price=closes.at(-1);
+  const e20=ema(closes,20), e50=ema(closes,50), e200=ema(closes,Math.min(200,closes.length-1));
+  const m12=ema(closes,12), m26=ema(closes,26), macd=m12.map((x,i)=>x-m26[i]), sig=ema(macd,9);
+  const hist=macd.map((x,i)=>x-sig[i]);
+  const R=rsi(closes), A=atr(cs);
+  const F=[]; const add=(name,val,pts)=>F.push({name,val,pts});
+
+  // 1 trend
+  const up=price>e50.at(-1)&&e20.at(-1)>e50.at(-1), dn=price<e50.at(-1)&&e20.at(-1)<e50.at(-1);
+  add("Trend (EMA 20/50)", up?"Uptrend":dn?"Downtrend":"Choppy", up?2:dn?-2:0);
+  // 2 long-term bias
+  add("Bias (EMA 200)", price>e200.at(-1)?"Above":"Below", price>e200.at(-1)?1:-1);
+  // 3 RSI
+  let rp=0; if(R<30)rp=1.5; else if(R>70)rp=-1.5; else if(up&&R>50&&R<65)rp=.5; else if(dn&&R<50&&R>35)rp=-.5;
+  add("RSI 14", R.toFixed(1)+(R<30?" oversold":R>70?" overbought":""), rp);
+  // 4 MACD momentum
+  const h1=hist.at(-1),h0=hist.at(-2); const mp=h1>0&&h1>h0?1:h1<0&&h1<h0?-1:0;
+  add("MACD momentum", (h1>0?"+":"")+fmt(h1,price)+(h1>h0?" rising":" falling"), mp);
+  // 5 volume spike on last closed candle
+  const vols=cs.map(x=>x.v); const lc=cs.at(-2); const avgV=vols.slice(-22,-2).reduce((s,x)=>s+x,0)/20;
+  const vr=avgV>0?lc.v/avgV:0; let vp=0; if(vr>1.5) vp=lc.c>lc.o?1:-1;
+  add("Volume", avgV>0?vr.toFixed(2)+"× average"+(vr>1.5?(lc.c>lc.o?" buyers":" sellers"):""):"No volume data", vp);
+  // 6 order flow (buy vs sell aggression)
+  const last=cs.slice(-10); let buy=0,tot=0;
+  last.forEach(x=>{ if(d.meta.flow==="taker"){buy+=x.tb;tot+=x.v} else {const rng=x.h-x.l; buy+=rng>0?x.v*(x.c-x.l)/rng:x.v/2; tot+=x.v} });
+  const fr=tot>0?buy/tot:.5; const fp=fr>.55?1:fr<.45?-1:0;
+  add(d.meta.flow==="taker"?"Order flow (taker buys)":"Order flow (estimated)", (fr*100).toFixed(0)+"% buying", fp);
+  // 7 order book imbalance (crypto)
+  let maxPts=8.5;
+  if(d.depth&&d.depth.bids.length){
+    const lo=price*.995, hi=price*1.005;
+    const b=d.depth.bids.filter(x=>x[0]>=lo).reduce((s,x)=>s+x[1],0), a=d.depth.asks.filter(x=>x[0]<=hi).reduce((s,x)=>s+x[1],0);
+    const im=b+a>0?b/(b+a):.5; add("Order book ±0.5%", (im*100).toFixed(0)+"% bids", im>.6?1:im<.4?-1:0); maxPts=9.5;
+  }
+  // 8 VWAP over last 50 candles
+  const w=cs.slice(-50); const pv=w.reduce((s,x)=>s+(x.h+x.l+x.c)/3*x.v,0), vv=w.reduce((s,x)=>s+x.v,0);
+  if(vv>0){const vw=pv/vv; add("VWAP (50 bars)", price>vw?"Price above":"Price below", price>vw?.5:-.5)}
+
+  // 9 fair value gaps + big-money zones (order blocks) + noise
+  const Z=zones(cs,A);
+  const inBullZ=Z.fvg.concat(Z.ob).some(z=>!z.filled&&z.type===1&&price>=z.bot&&price<=z.top*1.002);
+  const inBearZ=Z.fvg.concat(Z.ob).some(z=>!z.filled&&z.type===-1&&price<=z.top&&price>=z.bot*.998);
+  add("Gaps & big-money zones", inBullZ?"At buy zone":inBearZ?"At sell zone":`${Z.fvg.filter(z=>!z.filled).length} open gaps`, inBullZ?.5:inBearZ?-.5:0);
+  const chop=choppiness(cs,14);
+  add("Noise (chop index)", chop.toFixed(0)+(chop>61.8?" choppy = noise":chop<38.2?" trending":" normal"), 0);
+
+  const score=F.reduce((s,f)=>s+f.pts,0);
+  const conf=Math.min(100,Math.round(Math.abs(score)/maxPts*100));
+  let signal = score>=maxPts*.42?"LONG":score<=-maxPts*.42?"SHORT":"WAIT";
+  const noisy=chop>61.8; if(noisy&&signal!=="WAIT") signal="WAIT";
+  if(d.meta.kind==="stock"&&!d.meta.open) signal="CLOSED";
+  const dir=signal==="SHORT"?-1:1;
+  const stop=price-dir*1.5*A, tp1=price+dir*1.5*1.5*A, tp2=price+dir*3*1.5*A;
+  const chg=(price/cs.at(-2).c-1)*100;
+  const lastT=cs.at(-1).t; let ref;
+  if(d.meta.kind==="crypto"){ ref=[...cs].reverse().find(x=>x.t<=lastT-864e5)||cs[0] }
+  else { const day=new Date(lastT).toDateString(); ref=[...cs].reverse().find(x=>new Date(x.t).toDateString()!==day)||cs[0] }
+  const chgDay=(price/ref.c-1)*100;
+  return {price,score,conf,signal,F,R,A,stop,tp1,tp2,e20,e50,chg,chgDay,dir,Z,chop,noisy};
+}
+
+/* Fair value gaps (3-candle imbalance) and order blocks (last opposite candle before a
+   high-volume displacement move = where big players stepped in). A zone is "filled"
+   once price trades back through it. */
+function zones(cs,A){
+  const fvg=[], ob=[], vols=cs.map(x=>x.v);
+  const avgV=i=>{const s=vols.slice(Math.max(0,i-20),i);return s.length?s.reduce((a,b)=>a+b,0)/s.length:0};
+  for(let i=1;i<cs.length-1;i++){
+    const p=cs[i-1], n=cs[i+1];
+    if(n.l>p.h && n.l-p.h>=.15*A) fvg.push({i,type:1,bot:p.h,top:n.l});
+    if(n.h<p.l && p.l-n.h>=.15*A) fvg.push({i,type:-1,bot:n.h,top:p.l});
+    const c=cs[i], body=Math.abs(c.c-c.o), av=avgV(i);
+    if(body>1.5*A && av>0 && c.v>1.5*av){ // displacement candle on heavy volume
+      const dir=c.c>c.o?1:-1;
+      for(let j=i-1;j>=Math.max(0,i-3);j--){const o=cs[j]; if((o.c>o.o?1:-1)===-dir){ob.push({i:j,type:dir,bot:o.l,top:o.h,vol:c.v/av});break}}
+    }
+  }
+  for(const z of fvg.concat(ob)){
+    for(let k=z.i+2;k<cs.length;k++){
+      if(z.type===1?cs[k].l<=z.bot:cs[k].h>=z.top){z.filled=true;z.fillAt=k;break}
+    }
+  }
+  return {fvg,ob};
+}
+function choppiness(cs,n){
+  const s=cs.slice(-n-1); let tr=0;
+  for(let i=1;i<s.length;i++) tr+=Math.max(s[i].h-s[i].l,Math.abs(s[i].h-s[i-1].c),Math.abs(s[i].l-s[i-1].c));
+  const rng=Math.max(...s.slice(1).map(x=>x.h))-Math.min(...s.slice(1).map(x=>x.l));
+  return rng>0?100*Math.log10(tr/rng)/Math.log10(n):50;
+}
+function fmt(x,ref){const r=Math.abs(ref??x);const dp=r>=1000?2:r>=1?2:r>=.01?4:6;return Number(x).toLocaleString(undefined,{minimumFractionDigits:dp,maximumFractionDigits:dp})}
+function pct(x){return (x>=0?"+":"")+x.toFixed(2)+"%"}
+
+/* ---------- links ---------- */
+const TV = {BTC:"BINANCE:BTCUSDT",ETH:"BINANCE:ETHUSDT",SOL:"BINANCE:SOLUSDT",XRP:"BINANCE:XRPUSDT",DOGE:"BINANCE:DOGEUSDT",BNB:"BINANCE:BNBUSDT",AVAX:"BINANCE:AVAXUSDT",LINK:"BINANCE:LINKUSDT",
+  SPY:"AMEX:SPY",QQQ:"NASDAQ:QQQ","^GSPC":"SP:SPX","^IXIC":"NASDAQ:IXIC","^NDX":"NASDAQ:NDX","ES=F":"CME_MINI:ES1!","NQ=F":"CME_MINI:NQ1!"};
+const TV_TF={"5m":"5","15m":"15","1h":"60","4h":"240","1d":"D"};
+function tvUrl(sym){return "https://www.tradingview.com/chart/?symbol="+encodeURIComponent(TV[sym]||sym)+"&interval="+TV_TF[S.tf]}
+function phantomUrl(sym){const t="https://app.hyperliquid.xyz/trade/"+sym;return "https://phantom.app/ul/browse/"+encodeURIComponent(t)+"?ref="+encodeURIComponent("https://app.hyperliquid.xyz")}
+function tpl(t,sym){return t?t.replaceAll("{SYMBOL}",encodeURIComponent(sym)):""}
+function linksHtml(sym,primary){
+  const isC=CRYPTO.has(sym); let h=`<div class="links">`;
+  h+=`<a class="${primary?"primary":""}" href="${tvUrl(sym)}" target="_blank" rel="noopener">Open chart</a>`;
+  if(isC){ h+=`<a href="${phantomUrl(sym)}" target="_blank" rel="noopener" title="Opens Hyperliquid inside Phantom's browser">Phantom</a>`;
+    h+= S.fomo?`<a href="${tpl(S.fomo,sym)}" target="_blank" rel="noopener">FOMO</a>`:`<button data-open-settings>Set FOMO link</button>`; }
+  else if(S.broker){ h+=`<a href="${tpl(S.broker,sym)}" target="_blank" rel="noopener">Broker</a>` }
+  return h+`</div>`;
+}
+
+/* ---------- data loading ---------- */
+async function getJSON(u){const r=await fetch(u,{cache:"no-store"});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
+async function refresh(sym,withDepth){
+  try{
+    const j=await getJSON(`/api/candles?symbol=${encodeURIComponent(sym)}&tf=${S.tf}`);
+    data[sym]=data[sym]||{}; data[sym].meta=j; data[sym].candles=j.candles; data[sym].err=null;
+    if(withDepth&&CRYPTO.has(sym)) data[sym].depth=await getJSON(`/api/depth?symbol=${sym}`);
+    data[sym].a=analyze(sym);
+    onSignal(sym);
+  }catch(e){ data[sym]=data[sym]||{}; data[sym].err=String(e.message||e) }
+}
+function onSignal(sym){
+  const a=data[sym].a; if(!a) return; const prev=lastSignal[sym]; lastSignal[sym]=a.signal;
+  if(prev===undefined){ if(a.signal==="LONG"||a.signal==="SHORT") say("Atlas",sym,`${a.signal==="LONG"?"Go long":"Go short"} ${sym} at ${fmt(a.price)} · stop ${fmt(a.stop,a.price)} · confidence ${a.conf}%`,a.signal); return }
+  if(prev===a.signal) return;
+  if(a.signal==="LONG"||a.signal==="SHORT"){ say("Atlas",sym,`NEW CALL: ${a.signal==="LONG"?"go long":"go short"} ${sym} at ${fmt(a.price)} · stop ${fmt(a.stop,a.price)} · target ${fmt(a.tp1,a.price)} · confidence ${a.conf}%`,a.signal); ping(a.signal) }
+  else if(a.signal==="WAIT") say("Atlas",sym,`${sym}: setup faded, back to waiting. If you're in, manage your stop.`,"WAIT");
+}
+
+/* ---------- room chat ---------- */
+const BOTS={Atlas:{c:"#f2b84b",role:"Chart analyst"},Kelly:{c:"#7cc4ff",role:"Leverage desk"},Redline:{c:"#ef5f6b",role:"Max leverage"}};
+const feedItems=load("feed",[]);
+function say(who,sym,text,kind){feedItems.unshift({t:Date.now(),who,sym,text,kind});feedItems.length=Math.min(feedItems.length,80);save("feed",feedItems);renderFeed()}
+function renderFeed(){
+  const el=document.getElementById("feed");
+  if(!feedItems.length){el.innerHTML=`<li><time>—</time><span class="who">Atlas</span><span>Watching the scanner. I'll post here the moment any ticker lines up.</span></li>`;return}
+  el.innerHTML=feedItems.map(m=>`<li><time>${new Date(m.t).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</time><span class="who" style="color:${BOTS[m.who].c}">${m.who}</span><span>${esc(m.text)} <button data-sym="${esc(m.sym)}">view</button></span></li>`).join("");
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+let actx; function ping(kind){ if(!S.sound) return; try{actx=actx||new AudioContext();const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=kind==="LONG"?880:440;g.gain.setValueAtTime(.15,actx.currentTime);g.gain.exponentialRampToValueAtTime(.001,actx.currentTime+.5);o.connect(g).connect(actx.destination);o.start();o.stop(actx.currentTime+.5)}catch{} flashTitle(kind)}
+let flashT; function flashTitle(k){clearInterval(flashT);let n=0;flashT=setInterval(()=>{document.title=n++%2?"Signal Room":`● ${k} signal`;if(n>12){clearInterval(flashT);document.title="Signal Room"}},700)}
+
+/* ---------- rendering ---------- */
+function renderTf(){document.getElementById("tfSeg").innerHTML=TFS.map(t=>`<button aria-pressed="${t===S.tf}" data-tf="${t}">${t}</button>`).join("")}
+function renderScan(){
+  const el=document.getElementById("scan");
+  el.innerHTML=S.watch.map(sym=>{const d=data[sym]||{},a=d.a;
+    const pill=a?`<span class="pill ${a.signal}">${a.signal}</span>`:`<span class="pill CLOSED">${d.err?"ERROR":"…"}</span>`;
+    const sub=d.err?`<span class="sub">${esc(d.err).slice(0,40)}</span>`:a?`<span class="sub num">${fmt(a.price)} <span class="${a.chgDay>=0?"up":"down"}">${pct(a.chgDay)}</span>${a.signal!=="CLOSED"?" · "+a.conf+"%":" · market closed"}</span>`:`<span class="sub">loading</span>`;
+    return `<li role="option" aria-selected="${sym===S.sel}" data-sym="${esc(sym)}"><span class="sym">${esc(label(sym))}</span><span>${pill}<button class="x" data-rm="${esc(sym)}" aria-label="Remove ${esc(sym)}">×</button></span>${sub}<span></span></li>`}).join("");
+  document.getElementById("scanCount").textContent=S.watch.filter(s=>data[s]?.a&&["LONG","SHORT"].includes(data[s].a.signal)).length+" live calls";
+}
+const NAMES={SPY:"S&P 500 (SPY)",QQQ:"Nasdaq 100 (QQQ)","^GSPC":"S&P 500 index","^IXIC":"Nasdaq index","ES=F":"S&P futures","NQ=F":"Nasdaq futures"};
+function label(s){return NAMES[s]||s}
+
+function renderFocus(){
+  const sym=S.sel, d=data[sym]||{}, a=d.a;
+  document.getElementById("fSym").textContent=label(sym);
+  document.getElementById("fPrice").textContent=a?fmt(a.price):"";
+  const ch=document.getElementById("fChg"); ch.textContent=a?pct(a.chgDay)+(d.meta.kind==="crypto"?" 24h":" today"):""; ch.className="fchg "+(a&&a.chgDay>=0?"up":"down");
+  const p=document.getElementById("fPill"); p.className="pill "+(a?a.signal:"CLOSED"); p.textContent=a?a.signal:(d.err?"ERROR":"…");
+  document.getElementById("scoreTxt").textContent=a?`score ${a.score>0?"+":""}${a.score.toFixed(1)} · ${a.conf}%`:"";
+  document.getElementById("reasons").innerHTML=a?a.F.map(f=>`<div class="factor ${f.pts>0?"pos":f.pts<0?"neg":""}"><div class="fn">${f.name}</div><div class="fv">${esc(f.val)} <span style="color:var(--muted)">(${f.pts>0?"+":""}${f.pts})</span></div></div>`).join(""):`<div class="factor"><div class="fv">${d.err?esc(d.err):"Loading data…"}</div></div>`;
+  drawChart(d,a); renderBots(sym,d,a);
+}
+
+function botHead(n){const b=BOTS[n];return `<div class="bhead"><div class="avatar" style="background:${b.c}">${n[0]}</div><div><div class="bname">${n}</div><div class="brole">${b.role}</div></div></div>`}
+function renderBots(sym,d,a){
+  const atlas=document.getElementById("botAtlas"), kelly=document.getElementById("botKelly"), red=document.getElementById("botRed");
+  const active=a&&(a.signal==="LONG"||a.signal==="SHORT");
+  atlas.classList.toggle("hot",!!active);
+  if(!a){atlas.innerHTML=botHead("Atlas")+`<div class="bsay">${d.err?"I can't read this chart right now: "+esc(d.err):"Reading the chart…"}</div>`;kelly.innerHTML=botHead("Kelly");red.innerHTML=botHead("Redline");return}
+  const side=a.dir===1?"long":"short";
+  let say;
+  if(a.signal==="CLOSED") say=`The ${esc(label(sym))} market is closed. I don't call trades on stale candles. Last close ${fmt(a.price)}.`;
+  else if(active) say=`<b>Go ${side} ${esc(label(sym))}.</b> ${a.F.filter(f=>Math.sign(f.pts)===a.dir).map(f=>f.name.split(" (")[0].toLowerCase()).slice(0,4).join(", ")} line up on the ${S.tf}.`;
+  else if(a.noisy) say=`<b>Wait, this is noise.</b> ${esc(label(sym))} is chopping sideways (chop index ${a.chop.toFixed(0)}). Moves inside the grey band mean nothing. I'll call it when it breaks out.`;
+  else say=`<b>Wait.</b> Signals on ${esc(label(sym))} disagree (score ${a.score.toFixed(1)}). No edge here yet.`;
+  atlas.innerHTML=botHead("Atlas")+`<div class="bsay">${say}</div>`+
+    `<div class="meter" title="Confidence"><i style="width:${a.signal==="CLOSED"?0:a.conf}%"></i></div>`+
+    (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>`:"")+
+    linksHtml(sym,true);
+
+  // Kelly: leverage from risk budget and stop distance
+  const stopPct=Math.abs(a.price-a.stop)/a.price; const cap=CRYPTO.has(sym)?10:4;
+  const raw=(S.risk/100)/stopPct; const lev=Math.max(1,Math.min(cap,Math.floor(raw*10)/10));
+  const notional=S.acct*Math.min(raw,cap); const liq=a.price*(1-a.dir*(1/lev-.005));
+  const loss=notional*stopPct;
+  kelly.classList.toggle("hot",!!active);
+  kelly.innerHTML=botHead("Kelly")+
+    `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
+    (active?`<div class="kv"><div><span>Leverage</span><strong>${lev.toFixed(1)}x</strong></div><div><span>Position</span><strong>$${notional.toFixed(0)}</strong></div><div><span>Liq. ≈</span><strong>${lev<=1?"none":fmt(liq,a.price)}</strong></div></div>`:"")+
+    (raw>cap&&active?`<div class="warn">Math allowed ${raw.toFixed(1)}x but I cap at ${cap}x on ${CRYPTO.has(sym)?"crypto":"stocks"}.</div>`:"")+
+    linksHtml(sym,false);
+
+  // Redline: max leverage, with the liquidation reality check
+  const L=S.maxLev; const liqDist=Math.max(0,1/L-.005); const cs=d.candles.slice(-200);
+  const dir=a.dir; const hits=cs.filter(x=>dir===1?(x.o-x.l)/x.o>=liqDist:(x.h-x.o)/x.o>=liqDist).length;
+  const atrPct=a.A/a.price*100; const liqPx=a.price*(1-dir*liqDist);
+  red.classList.toggle("hot",!!active);
+  red.innerHTML=botHead("Redline")+
+    `<div class="bsay">${active?`<b>${L}x ${side}.</b> `:`<b>${L}x</b> if you insist. `}Liquidation sits only <b>${(liqDist*100).toFixed(2)}%</b> away. A normal ${S.tf} candle here moves ${atrPct.toFixed(2)}%. <b>${hits} of the last ${cs.length}</b> candles would have liquidated this ${side} inside a single bar.</div>`+
+    `<div class="kv"><div><span>Leverage</span><strong>${L}x</strong></div><div><span>Liq. price</span><strong>${fmt(liqPx,a.price)}</strong></div><div><span>Wiped by</span><strong>${hits}/${cs.length}</strong></div></div>`+
+    `<div class="warn">${liqDist<atrPct/100?"Liquidation is inside normal noise on this timeframe. Even a correct call usually gets stopped out first.":"Liquidation is outside one normal candle, but one bad wick still ends the trade."}</div>`+
+    linksHtml(sym,false);
+}
+
+/* ---------- chart ---------- */
+function drawChart(d,a){
+  const cv=document.getElementById("chart"), dpr=window.devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight;
+  cv.width=W*dpr; cv.height=H*dpr; const g=cv.getContext("2d"); g.scale(dpr,dpr); g.clearRect(0,0,W,H);
+  const css=getComputedStyle(document.documentElement), col=k=>css.getPropertyValue(k).trim();
+  if(!d||!d.candles||!a){g.fillStyle=col("--muted");g.font="13px "+col("--body");g.fillText(d&&d.err?d.err:"Loading chart…",16,30);return}
+  const total=d.candles.length;
+  const n=Math.max(MIN_BARS,Math.min(Math.round(view.n),total)); view.off=Math.max(0,Math.min(view.off,total-n));
+  const end=total-Math.round(view.off), st=end-n;
+  const cs=d.candles.slice(st,end), e20=a.e20.slice(st,end), e50=a.e50.slice(st,end);
+  document.getElementById("zReset").hidden=view.off<1&&Math.round(view.n)===DEFAULT_BARS;
+  const padR=70, volH=H*.18, top=46, bot=H-volH-18;
+  let lo=Math.min(...cs.map(x=>x.l)), hi=Math.max(...cs.map(x=>x.h));
+  if(a.signal==="LONG"||a.signal==="SHORT"){lo=Math.min(lo,a.stop,a.tp1);hi=Math.max(hi,a.stop,a.tp1)}
+  const pad=(hi-lo)*.05; lo-=pad; hi+=pad;
+  const y=p=>top+(hi-p)/(hi-lo)*(bot-top), cw=(W-padR)/n, x=i=>i*cw+cw/2; chartCw=cw;
+  // grid + price labels
+  g.strokeStyle=col("--line"); g.fillStyle=col("--muted"); g.font="11px "+col("--mono"); g.lineWidth=1;
+  for(let i=0;i<=4;i++){const p=lo+(hi-lo)*i/4, yy=Math.round(y(p))+.5; g.beginPath(); g.moveTo(0,yy); g.lineTo(W-padR,yy); g.stroke(); g.fillText(fmt(p,a.price),W-padR+6,yy+4)}
+  const PW=W-padR, xi=j=>x(j-st);  // xi: absolute candle index -> x
+  g.save(); g.beginPath(); g.rect(0,top,PW,bot-top); g.clip();
+  // NOISE: grey band = EMA20 ± 1 ATR. Price wiggling inside it is noise, not a move.
+  if(S.layers.noise){
+    g.fillStyle="rgba(138,150,173,.13)"; g.beginPath();
+    e20.forEach((v,i)=>i?g.lineTo(x(i),y(v+a.A)):g.moveTo(x(i),y(v+a.A)));
+    for(let i=e20.length-1;i>=0;i--) g.lineTo(x(i),y(e20[i]-a.A));
+    g.closePath(); g.fill();
+    // dim candles that are smaller than half an ATR on below-average volume
+  }
+  // FAIR VALUE GAPS: open = solid box extending right; filled = faint box that stops where it filled
+  const box=(z,fill,stroke,label)=>{
+    const x0=xi(z.i)-cw/2, x1=z.filled?xi(z.fillAt):PW; if(x1<0||x0>PW) return;
+    const y0=y(z.top), y1=y(z.bot); g.fillStyle=fill; g.fillRect(x0,y0,x1-x0,Math.max(2,y1-y0));
+    if(stroke){g.strokeStyle=stroke; g.setLineDash([3,3]); g.strokeRect(x0+.5,y0+.5,x1-x0-1,Math.max(2,y1-y0)-1); g.setLineDash([])}
+    if(label&&!z.filled&&y1-y0>9){g.fillStyle=stroke; g.font="10px "+col("--mono"); g.fillText(label,Math.max(4,x0+3),y0+10)}
+  };
+  if(S.layers.fvg) a.Z.fvg.forEach(z=>{ if(z.filled&&z.fillAt<st) return;
+    box(z, z.type===1?(z.filled?"rgba(47,196,154,.07)":"rgba(47,196,154,.2)"):(z.filled?"rgba(239,95,107,.07)":"rgba(239,95,107,.2)"),
+      z.filled?null:(z.type===1?col("--long"):col("--short")), z.type===1?"FVG ▲":"FVG ▼")});
+  // BIG MONEY: order blocks (where a heavy-volume move started)
+  if(S.layers.big) a.Z.ob.forEach(z=>{ if(z.filled&&z.fillAt<st) return;
+    box(z, z.filled?"rgba(180,140,255,.06)":"rgba(180,140,255,.2)", z.filled?null:col("--big"), "BIG $ "+(z.type===1?"buy":"sell")+" "+z.vol.toFixed(1)+"×")});
+  g.restore();
+  // volume
+  const mv=Math.max(...cs.map(x=>x.v))||1;
+  cs.forEach((c,i)=>{g.fillStyle=c.c>=c.o?"rgba(47,196,154,.35)":"rgba(239,95,107,.35)";const h=c.v/mv*volH;g.fillRect(x(i)-cw*.35,H-h,cw*.7,h)});
+  // candles (noise candles: tiny range on below-average volume are drawn faded)
+  const avgVis=cs.reduce((s,c)=>s+c.v,0)/cs.length;
+  cs.forEach((c,i)=>{const upC=c.c>=c.o; g.strokeStyle=g.fillStyle=upC?col("--long"):col("--short");
+    g.globalAlpha=S.layers.noise&&(c.h-c.l)<.5*a.A&&c.v<avgVis?.35:1;
+    g.beginPath(); g.moveTo(x(i),y(c.h)); g.lineTo(x(i),y(c.l)); g.stroke();
+    const yo=y(Math.max(c.o,c.c)), yc=y(Math.min(c.o,c.c)); g.fillRect(x(i)-cw*.33,yo,cw*.66,Math.max(1,yc-yo))});
+  g.globalAlpha=1;
+  // BIG MONEY: volume profile on the right edge. Longest bars = prices where the most volume traded.
+  if(S.layers.big){
+    const B=36, bins=new Array(B).fill(0), step=(hi-lo)/B;
+    cs.forEach(c=>{const b0=Math.max(0,Math.floor((c.l-lo)/step)), b1=Math.min(B-1,Math.floor((c.h-lo)/step)); const share=c.v/(b1-b0+1); for(let b=b0;b<=b1;b++) bins[b]+=share});
+    const mb=Math.max(...bins)||1, maxW=PW*.22, poc=bins.indexOf(mb);
+    const ranked=[...bins.keys()].sort((p,q)=>bins[q]-bins[p]).slice(0,3);
+    bins.forEach((v,b)=>{const yy=y(lo+(b+1)*step), hh=Math.max(1,y(lo+b*step)-yy-1), w=v/mb*maxW;
+      g.fillStyle=ranked.includes(b)?"rgba(180,140,255,.55)":"rgba(180,140,255,.16)"; g.fillRect(PW-w,yy,w,hh)});
+    const pocP=lo+(poc+.5)*step; g.strokeStyle=col("--big"); g.setLineDash([2,3]); g.beginPath(); g.moveTo(0,y(pocP)); g.lineTo(PW,y(pocP)); g.stroke(); g.setLineDash([]);
+    const t="BIG $ most traded "+fmt(pocP,a.price); g.font="10px "+col("--mono"); const tw=g.measureText(t).width;
+    g.fillStyle=col("--panel"); g.fillRect(4,y(pocP)-17,tw+8,14); g.fillStyle=col("--big"); g.fillText(t,8,y(pocP)-6);
+  }
+  // EMAs
+  [[e20,"#f2b84b"],[e50,"#7cc4ff"]].forEach(([arr,c])=>{g.strokeStyle=c;g.lineWidth=1.4;g.beginPath();arr.forEach((v,i)=>i?g.lineTo(x(i),y(v)):g.moveTo(x(i),y(v)));g.stroke()});
+  g.fillStyle="#f2b84b"; g.fillText("EMA20",8,16); g.fillStyle="#7cc4ff"; g.fillText("EMA50",58,16);
+  g.fillStyle=col("--muted"); g.fillText(n+" bars"+(view.off>=1?" · history":""),8,32);
+  // trade levels
+  if(a.signal==="LONG"||a.signal==="SHORT"){
+    [[a.price,col("--accent"),"ENTRY"],[a.stop,col("--short"),"STOP"],[a.tp1,col("--long"),"TARGET"]].forEach(([p,c,t])=>{
+      g.setLineDash([4,4]); g.strokeStyle=c; g.beginPath(); g.moveTo(0,y(p)); g.lineTo(W-padR,y(p)); g.stroke(); g.setLineDash([]);
+      g.fillStyle=c; g.fillRect(W-padR,y(p)-8,padR,16); g.fillStyle="#111"; g.fillText(t,W-padR+6,y(p)+4)});
+  }
+  // last price tag (only when the latest candle is on screen)
+  if(view.off<1){const lp=y(a.price); g.fillStyle=col("--fg"); g.beginPath(); g.arc(x(n-1),lp,3,0,7); g.fill()}
+}
+
+/* ---------- chart zoom + pan (mouse wheel, pinch, drag, buttons) ---------- */
+const DEFAULT_BARS=110, MIN_BARS=15, MAX_BARS=500;
+const view={n:DEFAULT_BARS,off:0}; let chartCw=5;
+function redraw(){const d=data[S.sel];drawChart(d,d&&d.a)}
+function zoomBy(f){view.n=Math.max(MIN_BARS,Math.min(MAX_BARS,view.n*f));redraw()}
+function resetView(){view.n=DEFAULT_BARS;view.off=0;redraw()}
+(function(){
+  const cv=document.getElementById("chart"), pts=new Map(); let start=null;
+  cv.addEventListener("wheel",e=>{e.preventDefault();zoomBy(e.deltaY>0?1.12:1/1.12)},{passive:false});
+  cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});start=snap()});
+  cv.addEventListener("pointermove",e=>{
+    if(!pts.has(e.pointerId)) return; pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pts.size>=2&&start.dist){ // pinch: spread fingers = zoom in
+      view.n=Math.max(MIN_BARS,Math.min(MAX_BARS,start.n*start.dist/Math.max(10,dist())));
+    } else if(pts.size===1){ // drag right = go back in time
+      view.off=Math.max(0,start.off+(e.clientX-start.x)/chartCw);
+    }
+    redraw();
+  });
+  const up=e=>{pts.delete(e.pointerId);start=pts.size?snap():null};
+  cv.addEventListener("pointerup",up); cv.addEventListener("pointercancel",up);
+  cv.addEventListener("dblclick",resetView);
+  function dist(){const [p,q]=[...pts.values()];return Math.hypot(p.x-q.x,p.y-q.y)}
+  function snap(){const p=[...pts.values()][0]||{x:0};return {n:view.n,off:view.off,x:p.x,dist:pts.size>=2?dist():0}}
+  document.getElementById("zIn").addEventListener("click",()=>zoomBy(1/1.4));
+  document.getElementById("zOut").addEventListener("click",()=>zoomBy(1.4));
+  document.getElementById("zReset").addEventListener("click",resetView);
+})();
+
+/* ---------- loop ---------- */
+let busy=false, tick=0;
+async function loop(){
+  if(busy) return; busy=true; tick++;
+  try{
+    await refresh(S.sel,true);
+    if(tick%5===1){ await Promise.all(S.watch.filter(s=>s!==S.sel).map(s=>refresh(s,CRYPTO.has(s)))) }
+    const ok=S.watch.some(s=>data[s]?.a);
+    document.getElementById("status").textContent=ok?"Live · updated "+new Date().toLocaleTimeString():"No data yet. Is server.py running?";
+    document.getElementById("liveDot").style.background=ok?"var(--long)":"var(--short)";
+  }finally{busy=false; renderScan(); renderFocus()}
+}
+setInterval(loop,4000);
+setInterval(()=>document.getElementById("clock").textContent=new Date().toLocaleTimeString(),1000);
+
+/* ---------- events ---------- */
+document.addEventListener("click",e=>{
+  const t=e.target.closest("[data-tf],[data-rm],[data-sym],[data-open-settings]"); if(!t) return;
+  if(t.dataset.tf){view.off=0;S.tf=t.dataset.tf;save("tf",S.tf);for(const k in data)delete data[k];for(const k in lastSignal)delete lastSignal[k];renderTf();tick=0;loop();return}
+  if(t.dataset.rm){e.stopPropagation();S.watch=S.watch.filter(s=>s!==t.dataset.rm);save("watch",S.watch);if(S.sel===t.dataset.rm)S.sel=S.watch[0]||"BTC";renderScan();renderFocus();return}
+  if(t.hasAttribute("data-open-settings")){openSettings();return}
+  if(t.dataset.sym){view.off=0;view.n=DEFAULT_BARS;S.sel=t.dataset.sym;save("sel",S.sel);if(!S.watch.includes(S.sel)){S.watch.push(S.sel);save("watch",S.watch)}renderScan();renderFocus();loop()}
+});
+document.getElementById("scan").addEventListener("keydown",e=>{if(e.key==="Enter"){const li=e.target.closest("li");li&&li.click()}});
+document.getElementById("addForm").addEventListener("submit",e=>{e.preventDefault();const v=document.getElementById("addInput").value.trim().toUpperCase();if(!v)return;if(!S.watch.includes(v))S.watch.push(v);save("watch",S.watch);S.sel=v;save("sel",v);document.getElementById("addInput").value="";renderScan();tick=0;loop()});
+document.getElementById("soundBtn").addEventListener("click",e=>{S.sound=!S.sound;e.target.setAttribute("aria-pressed",S.sound);e.target.textContent=S.sound?"Sound on":"Sound off";if(S.sound)ping("LONG")});
+const dlg=document.getElementById("settings");
+function openSettings(){sAcct.value=S.acct;sRisk.value=S.risk;sMax.value=S.maxLev;sFomo.value=S.fomo;sBroker.value=S.broker;dlg.showModal()}
+document.getElementById("settingsBtn").addEventListener("click",openSettings);
+dlg.addEventListener("close",()=>{if(dlg.returnValue!=="save")return;
+  S.acct=Math.max(1,+sAcct.value||1000);S.risk=Math.min(10,Math.max(.1,+sRisk.value||1));S.maxLev=Math.min(200,Math.max(2,Math.round(+sMax.value||100)));S.fomo=sFomo.value.trim();S.broker=sBroker.value.trim();
+  ["acct","risk","maxLev","fomo","broker"].forEach(k=>save(k,S[k]));renderFocus()});
+window.addEventListener("resize",()=>renderFocus());
+
+renderTf(); renderLayers(); renderFeed(); renderScan(); renderFocus(); loop();
+</script>
+</body>
+</html>
