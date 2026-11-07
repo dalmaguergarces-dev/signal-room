@@ -1,2 +1,5 @@
-# Only needed for the AI follow check (ai_check.py). Everything else is standard library.
+# AI follow check (ai_check.py)
 anthropic>=2.6,<3
+# Leaderboard wallet signatures (leaderboard.py)
+eth-keys>=0.6,<1
+eth-hash[pycryptodome]>=0.7,<1

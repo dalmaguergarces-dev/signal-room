@@ -213,6 +213,12 @@ AI_CHECKS_PER_DAY = int(os.environ.get("AI_CHECKS_PER_DAY", "300"))  # spending 
 _ai = {"day": "", "count": 0, "seen": set(), "log": []}
 
 
+try:
+    import leaderboard
+except ImportError:  # wallet libraries not installed: leaderboard stays off
+    leaderboard = None
+
+
 def ai_mode():
     return bool(ai_check and ai_check.enabled()) and not APPROVAL
 
@@ -678,6 +684,21 @@ class Handler(BaseHTTPRequestHandler):
         me = self.who()
         if not me or me[0] == "kicked":
             return self.send(401, json.dumps({"error": me[0] if me else "locked"}))
+        if u.path in ("/api/wallet/link", "/api/wallet/unlink"):
+            if not leaderboard:
+                return self.send(503, json.dumps({"error": "The leaderboard is off on this server."}))
+            if u.path.endswith("unlink"):
+                leaderboard.unlink(me[1])
+                return self.send(200, json.dumps({"ok": True}))
+            try:
+                d = json.loads(body or "{}")
+            except ValueError:
+                d = {}
+            ok, err = leaderboard.link(OWNER_KEY, me[1], str(d.get("address", "")),
+                                       str(d.get("message", "")), str(d.get("signature", "")))
+            if ok:
+                print(f"[leaderboard] {me[1]} linked a wallet", flush=True)
+            return self.send(200 if ok else 400, json.dumps({"ok": ok, "error": err}))
         if u.path == "/api/push/test":
             if me[0] != "owner":
                 return self.send(403, json.dumps({"error": "Only the owner can send a test."}))
@@ -751,6 +772,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html", "text/html; charset=utf-8")
             if u.path == "/api/me":
                 return self.send(200, json.dumps({"role": me[0], "name": me[1]}))
+            if u.path == "/api/wallet/challenge":
+                if not leaderboard:
+                    return self.send(503, json.dumps({"error": "The leaderboard is off on this server."}))
+                return self.send(200, json.dumps({"message": leaderboard.challenge(OWNER_KEY, me[1])}))
+            if u.path == "/api/leaderboard":
+                if not leaderboard:
+                    return self.send(200, json.dumps({"enabled": False}))
+                out = leaderboard.board("30d" if qs.get("period") == "30d" else "7d", me[1])
+                out["enabled"] = True
+                return self.send(200, json.dumps(out))
             if u.path == "/api/push":
                 out = {"enabled": PUSH, "tf": ALERT_TF, "server": NTFY,
                        "all": topic_for("ALL"),
@@ -817,6 +848,8 @@ if __name__ == "__main__":
         print(f"On your phone (same Wi-Fi):  http://{ip}:{PORT}", flush=True)
     if not os.environ.get("OWNER_KEY"):
         print("Your owner key is in the .owner_key file next to server.py", flush=True)
+    if leaderboard:
+        leaderboard.start()
     if PUSH:
         scanner_loop()
         print(f"Phone alerts on: scanning {len(ALERT_MARKETS)} markets every minute ({ALERT_TF})", flush=True)

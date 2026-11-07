@@ -145,6 +145,16 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
 .field label{font-size:12px;color:var(--muted)}
 .field input{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .field small{color:var(--muted);font-size:12px}
+.lb{list-style:none;margin:0;padding:0 14px 10px;display:grid;gap:6px}
+.lb li{display:grid;grid-template-columns:2.2em minmax(0,1fr) auto auto;gap:4px 12px;align-items:center;background:var(--panel2);border-radius:10px;padding:9px 12px;font-size:14px}
+.lb li.you{outline:1px solid var(--accent)}
+.lb .rk{font:800 16px var(--display);color:var(--muted)}
+.lb li:nth-child(1) .rk{color:#f2c94c}.lb li:nth-child(2) .rk{color:#c9d2df}.lb li:nth-child(3) .rk{color:#d79a63}
+.lb .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb .pl{font:600 14px var(--mono);text-align:right}
+.lb .st{font:12px var(--mono);color:var(--muted);text-align:right;min-width:7.5em}
+.lbme{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:0 14px 12px;font-size:14px}
+@media (max-width:760px){.lb li{grid-template-columns:2em minmax(0,1fr) auto}.lb .st{grid-column:2/-1;text-align:left}}
 .disclaimer{color:var(--muted);font-size:12px;padding:0 max(16px,2vw) 24px;max-width:900px}
 
 /* ---------- Phone layout (iPhone) ---------- */
@@ -246,6 +256,14 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
   <section class="panel chat" aria-label="Room chat">
     <div class="ptitle"><span>Room chat · live signal calls</span><span class="num" id="clock"></span></div>
     <ul class="feed" id="feed"></ul>
+  </section>
+
+  <section class="panel chat" aria-label="Leaderboard" id="lbPanel" hidden>
+    <div class="ptitle"><span>Leaderboard · real profit on DoNoJob markets</span>
+      <span class="seg" role="group" aria-label="Period"><button data-lb="7d" aria-pressed="true">7 days</button><button data-lb="30d" aria-pressed="false">30 days</button></span></div>
+    <div class="lbme" id="lbMe"></div>
+    <ol class="lb" id="lbList"></ol>
+    <p class="kmuted" style="padding:0 14px 14px;margin:0">Profit is read from each linked wallet's public Hyperliquid trades (Entropy runs on Hyperliquid), after fees, on the markets DoNoJob covers. Updated every few minutes. Wallet addresses are never shown.</p>
   </section>
 </main>
 
@@ -854,6 +872,56 @@ dlg.addEventListener("close",()=>{if(dlg.returnValue!=="save")return;
 window.addEventListener("resize",()=>renderFocus());
 
 document.getElementById("marketList").innerHTML=PICKS.map(([t,n])=>`<option value="${esc(t)}">${esc(n)}</option>`).join("");
+/* ---------- leaderboard: verified wallets ---------- */
+const LB = {period: load("lbPeriod","7d")};
+function money(x){return (x>=0?"+$":"-$")+Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:x>=1000||x<=-1000?0:2})}
+async function loadBoard(){
+  let j; try{j=await getJSON("/api/leaderboard?period="+LB.period)}catch{return}
+  const panel=document.getElementById("lbPanel"); panel.hidden=!j.enabled; if(!j.enabled) return;
+  document.querySelectorAll("[data-lb]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.lb===LB.period));
+  const me=j.me||{};
+  // after a server restart, quietly re-send this device's saved proof
+  const proof=load("walletProof",null);
+  if(!me.linked && proof && !LB.resent){LB.resent=true; await sendProof(proof,true); return loadBoard()}
+  const short=a=>a?a.slice(0,6)+"…"+a.slice(-4):"";
+  document.getElementById("lbMe").innerHTML=me.linked
+    ? `<span>Your wallet <b class="num">${esc(short(me.address))}</b> is linked${me.row?` · you're <b>#${me.row.rank}</b> with <b class="${me.row.pnl>=0?"up":"down"}">${money(me.row.pnl)}</b>`:" · your trades show up within a few minutes"}.</span><button class="hbtn" id="lbUnlink">Unlink</button>`
+    : `<span>Link the wallet you trade with on Entropy or Hyperliquid to get on the board. You sign a free message in Phantom. No transaction, no fees.</span><button class="hbtn" id="lbLink" style="border-color:var(--accent);color:var(--accent)">Link my wallet</button><span class="kmuted" id="lbMsg" style="margin:0"></span>`;
+  const rows=j.rows||[];
+  document.getElementById("lbList").innerHTML=rows.length?rows.map(r=>`<li class="${r.you?"you":""}"><span class="rk">${r.rank}</span><span class="nm">@${esc(r.name.replace(/_/g,"."))}${r.you?" (you)":""}</span><span class="pl ${r.pnl>=0?"up":"down"}">${money(r.pnl)}</span><span class="st">${r.trades} trades${r.win_rate!=null?" · "+r.win_rate+"% won":""}</span></li>`).join("")
+    :`<li><span class="rk">–</span><span class="nm" style="color:var(--muted)">No linked wallets yet. Be the first.</span></li>`;
+}
+async function sendProof(proof,quiet){
+  const r=await fetch("/api/wallet/link",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(proof)});
+  const j=await r.json().catch(()=>({}));
+  if(!j.ok && !quiet){const m=document.getElementById("lbMsg"); if(m) m.textContent=j.error||"Linking failed."}
+  if(!j.ok && quiet && /different member|already linked/.test(j.error||"")) save("walletProof",null);
+  return j.ok;
+}
+async function linkWallet(){
+  const msg=document.getElementById("lbMsg"); const prov=(window.phantom&&window.phantom.ethereum)||window.ethereum;
+  if(!prov){
+    const u=encodeURIComponent(location.origin);
+    msg.innerHTML=`No wallet found in this browser. <a href="https://phantom.app/ul/browse/${u}?ref=${u}" style="color:var(--accent)">Open DoNoJob in Phantom</a>, log in with your key there, then tap Link my wallet.`;
+    return;
+  }
+  try{
+    msg.textContent="Check Phantom…";
+    const [address]=await prov.request({method:"eth_requestAccounts"});
+    const {message}=await getJSON("/api/wallet/challenge");
+    const hex="0x"+[...new TextEncoder().encode(message)].map(b=>b.toString(16).padStart(2,"0")).join("");
+    const signature=await prov.request({method:"personal_sign",params:[hex,address]});
+    const proof={address,message,signature};
+    if(await sendProof(proof,false)){save("walletProof",proof);loadBoard()}
+  }catch(e){msg.textContent=e&&e.code===4001?"You cancelled in Phantom. Nothing was linked.":"Linking didn't work. Try again in Phantom."}
+}
+document.addEventListener("click",async e=>{
+  const p=e.target.closest("[data-lb]"); if(p){LB.period=p.dataset.lb;save("lbPeriod",LB.period);loadBoard();return}
+  if(e.target.id==="lbLink"){linkWallet();return}
+  if(e.target.id==="lbUnlink"){await fetch("/api/wallet/unlink",{method:"POST"});save("walletProof",null);loadBoard()}
+});
+loadBoard(); setInterval(loadBoard,120000);
+
 renderTf(); renderLayers(); renderFeed(); renderScan(); renderFocus(); loop();
 </script>
 </body>
