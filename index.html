@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Signal Room</title>
+<title>DoNoJob</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Signal Room">
+<meta name="apple-mobile-web-app-title" content="DoNoJob">
 <meta name="theme-color" content="#151c29">
 <link rel="apple-touch-icon" href="/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -32,6 +32,9 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px
 .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--long);box-shadow:0 0 0 0 var(--long);animation:pulse 2s infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,196,154,.6)}70%{box-shadow:0 0 0 8px rgba(47,196,154,0)}100%{box-shadow:0 0 0 0 rgba(47,196,154,0)}}
 @media (prefers-reduced-motion:reduce){.brand .dot{animation:none}}
+.brand .pfp{width:38px;height:38px;border-radius:50%;border:2px solid var(--accent);object-fit:cover}
+.kmuted{color:var(--muted);font-size:13px;margin:0 0 12px}
+#keysBtn{border-color:var(--accent);color:var(--accent)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg button{background:none;border:0;padding:6px 11px;cursor:pointer;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent);color:#1a1405;font-weight:600}
@@ -174,10 +177,11 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
 </head>
 <body>
 <header>
-  <div class="brand"><span class="dot" id="liveDot"></span>Signal Room</div>
+  <div class="brand"><img src="/avatar.png" alt="" class="pfp" width="38" height="38"><span>DoNoJob</span><span class="dot" id="liveDot" title="Live data"></span></div>
   <div class="seg" id="tfSeg" role="group" aria-label="Timeframe"></div>
   <button class="hbtn" id="soundBtn" aria-pressed="false">Sound off</button>
   <button class="hbtn" id="settingsBtn">Settings</button>
+  <button class="hbtn" id="keysBtn" hidden>Keys</button>
   <span class="spacer"></span>
   <span class="status" id="status">Connecting…</span>
 </header>
@@ -239,7 +243,23 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
     <div class="field"><label for="sMax">Redline's leverage (x)</label><input id="sMax" type="number" min="2" max="200" step="1"></div>
     <div class="field"><label for="sFomo">FOMO link (use {SYMBOL} where the ticker goes)</label><input id="sFomo" placeholder="https://…/{SYMBOL}"><small>Paste the web link of a coin page from your FOMO app and swap the ticker for {SYMBOL}.</small></div>
     <div class="field"><label for="sBroker">Stock broker link (optional, {SYMBOL})</label><input id="sBroker" placeholder="https://…/{SYMBOL}"></div>
-    <div class="links"><button class="primary" value="save" id="saveSettings" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">Save</button><button value="cancel">Cancel</button></div>
+    <div class="links"><button class="primary" value="save" id="saveSettings" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">Save</button><button value="cancel">Cancel</button><a href="/logout" style="margin-left:auto">Log out</a></div>
+  </form>
+</dialog>
+
+<dialog id="keysDlg" aria-labelledby="keysTitle">
+  <form id="keysForm">
+    <h2 id="keysTitle">Give a friend a key</h2>
+    <p class="kmuted">Only you can make keys. Each friend gets their own, so you can block one without changing the others.</p>
+    <div class="field"><label for="kName">Friend's name</label><input id="kName" maxlength="24" placeholder="e.g. marco" autocomplete="off"><small>Letters, numbers and _ only.</small></div>
+    <div class="links"><button type="submit" style="background:var(--accent);color:#1a1405;border-color:var(--accent);font-weight:600">Make key</button><button type="button" id="kClose">Close</button></div>
+    <div id="kOut" hidden>
+      <div class="field" style="margin-top:14px"><label for="kKey">Their key</label><input id="kKey" readonly></div>
+      <div class="field"><label for="kLink">Invite link (opens the room with the key filled in)</label><input id="kLink" readonly></div>
+      <div class="links"><button type="button" id="kCopyLink">Copy invite link</button><button type="button" id="kCopyKey">Copy key</button></div>
+      <p class="kmuted" id="kNote"></p>
+      <p class="kmuted">To block this friend later, add their name to <b>REVOKED</b> in your host's settings.</p>
+    </div>
   </form>
 </dialog>
 
@@ -382,7 +402,29 @@ function linksHtml(sym,primary){
 }
 
 /* ---------- data loading ---------- */
-async function getJSON(u){const r=await fetch(u,{cache:"no-store"});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
+async function getJSON(u){const r=await fetch(u,{cache:"no-store"});if(r.status===401){location.href="/login";throw new Error("locked")}const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
+
+/* ---------- owner: friend keys ---------- */
+(async function(){
+  let me; try{me=await getJSON("/api/me")}catch{return}
+  if(me.role!=="owner") return;
+  const btn=document.getElementById("keysBtn"), dlgK=document.getElementById("keysDlg"); btn.hidden=false;
+  btn.addEventListener("click",()=>{document.getElementById("kOut").hidden=true;dlgK.showModal();document.getElementById("kName").focus()});
+  document.getElementById("kClose").addEventListener("click",()=>dlgK.close());
+  document.getElementById("keysForm").addEventListener("submit",async e=>{
+    e.preventDefault(); const note=document.getElementById("kNote");
+    const r=await fetch("/api/keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:document.getElementById("kName").value})});
+    const j=await r.json(); document.getElementById("kOut").hidden=false;
+    if(!r.ok){document.getElementById("kKey").value="";document.getElementById("kLink").value="";note.textContent=j.error;return}
+    document.getElementById("kKey").value=j.key;
+    document.getElementById("kLink").value=location.origin+"/login#k-"+encodeURIComponent(j.key);
+    note.textContent=j.note||("Key made for "+j.name+". Send it only to them.");
+  });
+  const copy=(id,b)=>{const el=document.getElementById(id);const done=()=>{const t=b.textContent;b.textContent="Copied";setTimeout(()=>b.textContent=t,1500)};
+    (navigator.clipboard?navigator.clipboard.writeText(el.value):Promise.reject()).then(done,()=>{el.select();try{document.execCommand("copy");done()}catch{}})};
+  document.getElementById("kCopyLink").addEventListener("click",e=>copy("kLink",e.target));
+  document.getElementById("kCopyKey").addEventListener("click",e=>copy("kKey",e.target));
+})();
 async function refresh(sym,withDepth){
   try{
     const j=await getJSON(`/api/candles?symbol=${encodeURIComponent(sym)}&tf=${S.tf}`);
@@ -411,7 +453,7 @@ function renderFeed(){
 }
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 let actx; function ping(kind){ if(!S.sound) return; try{actx=actx||new AudioContext();const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=kind==="LONG"?880:440;g.gain.setValueAtTime(.15,actx.currentTime);g.gain.exponentialRampToValueAtTime(.001,actx.currentTime+.5);o.connect(g).connect(actx.destination);o.start();o.stop(actx.currentTime+.5)}catch{} flashTitle(kind)}
-let flashT; function flashTitle(k){clearInterval(flashT);let n=0;flashT=setInterval(()=>{document.title=n++%2?"Signal Room":`● ${k} signal`;if(n>12){clearInterval(flashT);document.title="Signal Room"}},700)}
+let flashT; function flashTitle(k){clearInterval(flashT);let n=0;flashT=setInterval(()=>{document.title=n++%2?"DoNoJob":`● ${k} signal`;if(n>12){clearInterval(flashT);document.title="DoNoJob"}},700)}
 
 /* ---------- rendering ---------- */
 function renderTf(){document.getElementById("tfSeg").innerHTML=TFS.map(t=>`<button aria-pressed="${t===S.tf}" data-tf="${t}">${t}</button>`).join("")}

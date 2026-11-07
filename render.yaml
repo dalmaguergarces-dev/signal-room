@@ -1,11 +1,17 @@
 services:
   - type: web
-    name: signal-room
+    name: donojob
     runtime: python
     plan: free
     buildCommand: "echo no dependencies"
     startCommand: "python server.py"
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
+      # Your master key. Render makes a random one; read it in the Environment tab.
+      - key: OWNER_KEY
+        generateValue: true
+      # Names of friends whose keys should stop working, comma separated.
+      - key: REVOKED
+        value: ""
