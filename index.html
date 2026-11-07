@@ -65,6 +65,18 @@ main{display:grid;grid-template-columns:300px minmax(0,1fr) 360px;gap:14px;paddi
 .pill.SHORT{background:rgba(239,95,107,.16);color:var(--short)}
 .pill.WAIT{background:rgba(138,150,173,.14);color:var(--wait)}
 .pill.CLOSED{background:transparent;color:var(--muted);border:1px dashed var(--line)}
+.bell{background:none;border:1px solid transparent;border-radius:8px;color:var(--muted);cursor:pointer;padding:3px 5px;line-height:0;vertical-align:middle;opacity:.55}
+.bell:hover{opacity:1;border-color:var(--line)}
+.bell[aria-pressed="true"]{color:var(--accent);opacity:1}
+.fbell{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;color:var(--muted);padding:5px 12px;font-size:13px;cursor:pointer}
+.fbell[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.toasts{position:fixed;z-index:50;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;width:min(360px,calc(100vw - 32px))}
+.toast{background:var(--panel);border:1px solid var(--accent);border-radius:14px;padding:14px;box-shadow:0 12px 32px rgba(0,0,0,.45);display:grid;gap:8px;animation:tin .25s ease-out}
+.toast.LONG{border-left:5px solid var(--long)}.toast.SHORT{border-left:5px solid var(--short)}
+.toast h3{margin:0;font:700 16px/1.2 var(--display)}
+.toast .kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+@keyframes tin{from{transform:translateY(12px);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.toast{animation:none}}
 .add{display:flex;gap:6px;padding:8px 12px 14px}
 .add input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
 
@@ -204,6 +216,7 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
       <span class="fprice" id="fPrice"></span>
       <span class="fchg" id="fChg"></span>
       <span class="spacer"></span>
+      <button class="fbell" id="fBell" aria-pressed="false"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.3 15.4A1 1 0 0 0 5.2 17h13.6a1 1 0 0 0 .9-1.6L18 12.6V9a6 6 0 0 0-6-6Zm-2.2 15.5a2.3 2.3 0 0 0 4.4 0Z" fill="currentColor"/></svg><span>Alert me</span></button>
       <span class="pill WAIT" id="fPill">…</span>
     </div>
     <div class="layers" role="group" aria-label="Chart layers">
@@ -236,6 +249,8 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
 </main>
 
 <p class="disclaimer">These bots run rule-based technical analysis (trend, RSI, MACD, volume, order flow, VWAP, ATR). They don't predict the future and nobody, human or bot, is ever "so sure". Signals are often wrong. This is a tool, not financial advice. Stock data from Yahoo can lag by a few minutes, and stocks only produce signals while their market is open.</p>
+
+<div class="toasts" id="toasts" aria-live="assertive"></div>
 
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
@@ -303,6 +318,7 @@ const S = {
   acct: load("acct",1000), risk: load("risk",1), maxLev: load("maxLev",100),
   fomo: load("fomo",""), broker: load("broker",""),
   sound: false,
+  alerts: load("alerts", []),
   layers: (()=>{const l=load("layers",{fvg:true,big:true,noise:false}); if(!load("v3",false)){l.noise=false; save("layers",l); save("v3",true)} return l})(),
 };
 function renderLayers(){document.querySelectorAll("[data-layer]").forEach(b=>b.setAttribute("aria-pressed",!!S.layers[b.dataset.layer]))}
@@ -490,7 +506,53 @@ async function refresh(sym,withDepth){
     onSignal(sym);
   }catch(e){ data[sym]=data[sym]||{}; data[sym].err=String(e.message||e) }
 }
+/* ---------- trade alerts ----------
+   Bell a market and you get an alert the moment Atlas opens a trade on it,
+   with entry, stop, 3:1 target and Kelly's leverage already worked out. */
+const alerted = {};  // sym -> signal we already alerted for
+function kellyFor(sym,a){
+  const stopPct=Math.abs(a.price-a.stop)/a.price, K=CLASS[data[sym].meta.kind]||CLASS.stock;
+  const raw=(S.risk/100)/stopPct, lev=Math.max(1,Math.min(K.cap,Math.floor(raw*10)/10));
+  return {lev, loss:S.acct*Math.min(raw,K.cap)*stopPct};
+}
+function checkAlert(sym){
+  const a=data[sym].a; if(!a) return;
+  const live=a.signal==="LONG"||a.signal==="SHORT";
+  if(!live){ delete alerted[sym]; return }
+  if(!S.alerts.includes(sym) || alerted[sym]===a.signal) return;
+  alerted[sym]=a.signal; fireAlert(sym,a);
+}
+function fireAlert(sym,a){
+  const k=kellyFor(sym,a), side=a.signal==="LONG"?"Long":"Short", name=label(sym);
+  const body=`Entry ${fmt(a.price)} · Stop ${fmt(a.stop,a.price)} · Target 3:1 ${fmt(a.tp1,a.price)} · ${k.lev.toFixed(1)}x`;
+  const el=document.createElement("div"); el.className="toast "+a.signal; el.setAttribute("role","alert");
+  el.innerHTML=`<h3>${side} ${esc(name)}: trade is set</h3>
+    <div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div>
+    <div><span>Target 3:1</span><strong>${fmt(a.tp1,a.price)}</strong></div><div><span>Leverage</span><strong>${k.lev.toFixed(1)}x</strong></div></div>
+    <div class="links"><button data-sym="${esc(sym)}" class="primary" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">View</button>${ENTROPY[sym]?`<a class="entropy" href="${entropyUrl(sym)}" target="_blank" rel="noopener">Entropy</a>`:""}<button data-dismiss>Dismiss</button></div>`;
+  document.getElementById("toasts").prepend(el);
+  say("Atlas",sym,`ALERT ${side.toUpperCase()} ${name}: ${body}`,a.signal);
+  chime(a.signal); try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch{}
+  flashTitle(a.signal);
+  try{ if("Notification" in window && Notification.permission==="granted"){
+    const n=new Notification(`${side} ${name}: trade is set`,{body,icon:"/icon.png",tag:"donojob-"+sym});
+    n.onclick=()=>{window.focus();S.sel=sym;renderScan();renderFocus();n.close()} } }catch{}
+}
+function chime(kind){ try{actx=actx||new AudioContext(); const t=actx.currentTime;
+  (kind==="LONG"?[660,880,1100]:[880,660,520]).forEach((f,i)=>{const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=f;
+    g.gain.setValueAtTime(.0001,t+i*.14);g.gain.exponentialRampToValueAtTime(.18,t+i*.14+.02);g.gain.exponentialRampToValueAtTime(.0001,t+i*.14+.3);
+    o.connect(g).connect(actx.destination);o.start(t+i*.14);o.stop(t+i*.14+.32)}) }catch{} }
+function toggleAlert(sym){
+  const on=!S.alerts.includes(sym);
+  S.alerts=on?S.alerts.concat(sym):S.alerts.filter(x=>x!==sym); save("alerts",S.alerts);
+  if(on){ try{actx=actx||new AudioContext(); actx.resume&&actx.resume()}catch{}   // unlock sound from this tap
+    try{ if("Notification" in window && Notification.permission==="default") Notification.requestPermission() }catch{}
+    delete alerted[sym]; if(data[sym]?.a) checkAlert(sym); }
+  renderScan(); renderBellBtn();
+}
+function renderBellBtn(){const b=document.getElementById("fBell"), on=S.alerts.includes(S.sel); b.setAttribute("aria-pressed",on); b.lastElementChild.textContent=on?"Alerts on":"Alert me"}
 function onSignal(sym){
+  checkAlert(sym);
   const a=data[sym].a; if(!a) return; const prev=lastSignal[sym]; lastSignal[sym]=a.signal;
   if(prev===undefined){ if(a.signal==="LONG"||a.signal==="SHORT") say("Atlas",sym,`${a.signal==="LONG"?"Go long":"Go short"} ${sym} at ${fmt(a.price)} · stop ${fmt(a.stop,a.price)} · confidence ${a.conf}%`,a.signal); return }
   if(prev===a.signal) return;
@@ -518,7 +580,7 @@ function renderScan(){
   el.innerHTML=S.watch.map(sym=>{const d=data[sym]||{},a=d.a;
     const pill=a?`<span class="pill ${a.signal}">${a.signal}</span>`:`<span class="pill CLOSED">${d.err?"ERROR":"…"}</span>`;
     const sub=d.err?`<span class="sub">${esc(d.err).slice(0,40)}</span>`:a?`<span class="sub num">${fmt(a.price)} <span class="${a.chgDay>=0?"up":"down"}">${pct(a.chgDay)}</span>${a.signal!=="CLOSED"?" · "+a.conf+"%":" · market closed"}</span>`:`<span class="sub">loading</span>`;
-    return `<li role="option" aria-selected="${sym===S.sel}" data-sym="${esc(sym)}"><span class="sym">${esc(label(sym))}</span><span>${pill}<button class="x" data-rm="${esc(sym)}" aria-label="Remove ${esc(sym)}">×</button></span>${sub}<span></span></li>`}).join("");
+    return `<li role="option" aria-selected="${sym===S.sel}" data-sym="${esc(sym)}"><span class="sym">${esc(label(sym))}</span><span><button class="bell" data-bell="${esc(sym)}" aria-pressed="${S.alerts.includes(sym)}" aria-label="Alert me when ${esc(label(sym))} opens a trade"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.3 15.4A1 1 0 0 0 5.2 17h13.6a1 1 0 0 0 .9-1.6L18 12.6V9a6 6 0 0 0-6-6Zm-2.2 15.5a2.3 2.3 0 0 0 4.4 0Z" fill="currentColor"/></svg></button>${pill}<button class="x" data-rm="${esc(sym)}" aria-label="Remove ${esc(sym)}">×</button></span>${sub}<span></span></li>`}).join("");
   document.getElementById("scanCount").textContent=S.watch.filter(s=>data[s]?.a&&["LONG","SHORT"].includes(data[s].a.signal)).length+" live calls";
 }
 const NAMES={SPY:"S&P 500 (SPY)",QQQ:"Nasdaq 100 (QQQ)",PAXG:"Gold 24/7 (PAXG)","GC=F":"Gold","SI=F":"Silver","CL=F":"Oil (WTI)","BZ=F":"Oil (Brent)","NG=F":"Natural gas","HG=F":"Copper","PL=F":"Platinum",
@@ -527,6 +589,7 @@ const NAMES={SPY:"S&P 500 (SPY)",QQQ:"Nasdaq 100 (QQQ)",PAXG:"Gold 24/7 (PAXG)",
 function label(s){return NAMES[s]||PICK_NAME[s]||s}
 
 function renderFocus(){
+  renderBellBtn();
   const sym=S.sel, d=data[sym]||{}, a=d.a;
   document.getElementById("fSym").textContent=label(sym);
   document.getElementById("fPrice").textContent=a?fmt(a.price):"";
@@ -710,6 +773,12 @@ document.addEventListener("click",e=>{
   if(t.hasAttribute("data-open-settings")){openSettings();return}
   if(t.dataset.sym){view.off=0;view.n=DEFAULT_BARS;S.sel=t.dataset.sym;save("sel",S.sel);if(!S.watch.includes(S.sel)){S.watch.push(S.sel);save("watch",S.watch)}renderScan();renderFocus();loop()}
 });
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-bell]"); if(b){e.stopPropagation();e.preventDefault();toggleAlert(b.dataset.bell);return}
+  const d=e.target.closest("[data-dismiss]"); if(d){d.closest(".toast").remove();return}
+  if(e.target.closest(".toast [data-sym]")) e.target.closest(".toast").remove();
+},true);
+document.getElementById("fBell").addEventListener("click",()=>toggleAlert(S.sel));
 document.getElementById("scan").addEventListener("keydown",e=>{if(e.key==="Enter"){const li=e.target.closest("li");li&&li.click()}});
 document.getElementById("addForm").addEventListener("submit",e=>{e.preventDefault();let v=document.getElementById("addInput").value.trim().toUpperCase();if(!v)return;v=ALIAS[v.replace(/[\s\/]/g,"")]||v;if(!S.watch.includes(v))S.watch.push(v);save("watch",S.watch);S.sel=v;save("sel",v);document.getElementById("addInput").value="";renderScan();tick=0;loop()});
 document.getElementById("soundBtn").addEventListener("click",e=>{S.sound=!S.sound;e.target.setAttribute("aria-pressed",S.sound);e.target.textContent=S.sound?"Sound on":"Sound off";if(S.sound)ping("LONG")});
