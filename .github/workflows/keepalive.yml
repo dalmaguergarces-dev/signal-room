@@ -1,0 +1,20 @@
+# Pings DoNoJob every 10 minutes so Render's free plan doesn't put it to sleep,
+# which keeps the phone-alert scanner running around the clock.
+# Setup: GitHub repo -> Settings -> Secrets and variables -> Actions -> Variables
+#        -> New variable  APP_URL = https://your-app.onrender.com
+name: keep DoNoJob awake
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping health check
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then echo "APP_URL variable not set yet, skipping"; exit 0; fi
+          curl -fsS --retry 3 --retry-delay 20 --max-time 90 "$APP_URL/healthz"

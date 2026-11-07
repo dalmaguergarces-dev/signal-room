@@ -260,6 +260,17 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
     <div class="field"><label for="sMax">Redline's leverage (x)</label><input id="sMax" type="number" min="2" max="200" step="1"></div>
     <div class="field"><label for="sFomo">FOMO link (use {SYMBOL} where the ticker goes)</label><input id="sFomo" placeholder="https://…/{SYMBOL}"><small>Paste the web link of a coin page from your FOMO app and swap the ticker for {SYMBOL}.</small></div>
     <div class="field"><label for="sBroker">Stock broker link (optional, {SYMBOL})</label><input id="sBroker" placeholder="https://…/{SYMBOL}"></div>
+    <div id="pushBox" hidden style="border-top:1px solid var(--line);padding-top:14px;margin-bottom:14px">
+      <h2 style="font-size:17px;margin:0 0 6px">Phone alerts, even with DoNoJob closed</h2>
+      <ol class="kmuted" style="padding-left:18px;margin:0 0 10px">
+        <li>Install the free <a href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noopener">ntfy app</a> (also on Android).</li>
+        <li>In ntfy tap <b>+</b>, paste a topic below and tap <b>Subscribe</b>.</li>
+        <li>Allow notifications when your phone asks.</li>
+      </ol>
+      <p class="kmuted" id="pushTf"></p>
+      <ul id="pushList" style="list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:220px;overflow:auto"></ul>
+      <div class="links" id="pushOwner" hidden style="margin-top:10px"><button type="button" id="pushTest">Send test alert</button><span class="kmuted" id="pushStatus" style="margin:0;align-self:center"></span></div>
+    </div>
     <div class="links"><button class="primary" value="save" id="saveSettings" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">Save</button><button value="cancel">Cancel</button><a href="/logout" style="margin-left:auto">Log out</a></div>
   </form>
 </dialog>
@@ -468,6 +479,25 @@ function linksHtml(sym,primary){
 
 /* ---------- data loading ---------- */
 async function getJSON(u){const r=await fetch(u,{cache:"no-store"});if(r.status===401){location.href="/login";throw new Error("locked")}const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
+
+/* ---------- phone push alerts (ntfy) ---------- */
+async function loadPush(){
+  let j; try{j=await getJSON("/api/push")}catch{return}
+  const box=document.getElementById("pushBox"); box.hidden=!j.enabled; if(!j.enabled) return;
+  document.getElementById("pushTf").textContent=`The server checks these markets every minute on the ${j.tf} chart. "All markets" sends every call.`;
+  const row=(lbl,topic)=>`<li style="display:flex;gap:8px;align-items:center;font-size:13px"><span style="min-width:96px;font-weight:600">${esc(lbl)}</span><input readonly value="${esc(topic)}" aria-label="ntfy topic for ${esc(lbl)}" style="flex:1;min-width:0;font:12px var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 8px;color:var(--fg)"><button type="button" class="hbtn" data-copytopic="${esc(topic)}" style="padding:6px 10px">Copy</button></li>`;
+  document.getElementById("pushList").innerHTML=row("All markets",j.all)+Object.entries(j.markets).map(([s,t])=>row(label(s),t)).join("");
+  if(j.status){ document.getElementById("pushOwner").hidden=false;
+    document.getElementById("pushStatus").textContent=`${j.status.scans} scans · ${j.status.sent} alerts sent${j.status.error?" · last problem: "+j.status.error:""}`; }
+}
+document.addEventListener("click",async e=>{
+  const c=e.target.closest("[data-copytopic]");
+  if(c){ const t=c.dataset.copytopic; try{await navigator.clipboard.writeText(t);c.textContent="Copied"}catch{c.previousElementSibling.select()} setTimeout(()=>c.textContent="Copy",1500); return }
+  if(e.target.id==="pushTest"){ const st=document.getElementById("pushStatus"); st.textContent="Sending…";
+    const r=await fetch("/api/push/test",{method:"POST"}); const j=await r.json().catch(()=>({}));
+    st.textContent=r.ok?"Test sent to All markets. Check your phone.":"Couldn't send: "+(j.error||r.status) }
+});
+document.getElementById("settingsBtn").addEventListener("click",loadPush);
 
 /* ---------- owner: friend keys ---------- */
 (async function(){

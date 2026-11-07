@@ -176,6 +176,85 @@ def handle_to_name(handle):
     return handle.replace(".", "_")
 
 
+# ------------------------------------------------------- phone push alerts
+# The server scans ALERT_MARKETS every minute on ALERT_TF. When Atlas opens a
+# trade it pushes it through ntfy (free app, no account). Each market has its
+# own topic, so people subscribe in the ntfy app to just the markets they want.
+# Topic names are derived from OWNER_KEY so outsiders can't guess them.
+PUSH = os.environ.get("PUSH", "on").lower() != "off"
+NTFY = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+ALERT_TF = os.environ.get("ALERT_TF", "15m")
+ALERT_MARKETS = [s.strip().upper() for s in os.environ.get(
+    "ALERT_MARKETS", "BTC,ETH,SOL,PAXG,GC=F,SI=F,CL=F,EURUSD=X,SPY,QQQ,TSLA,NVDA,AAPL").split(",") if s.strip()]
+PUBLIC_URL = os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
+NICE = {"PAXG": "Gold 24/7", "GC=F": "Gold", "SI=F": "Silver", "CL=F": "Oil", "BZ=F": "Brent oil",
+        "NG=F": "Natural gas", "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY",
+        "SPY": "S&P 500", "QQQ": "Nasdaq 100", "^GSPC": "S&P 500", "^IXIC": "Nasdaq"}
+CAPS = {"crypto": 10, "futures": 20, "index": 20, "forex": 30, "stock": 4}
+_push_state = {"last": {}, "scans": 0, "sent": 0, "error": ""}
+
+
+def topic_for(sym):
+    tag = hmac.new(OWNER_KEY.encode(), b"topic:" + sym.encode(), hashlib.sha256).hexdigest()[:10]
+    return f"donojob_{re.sub(r'[^A-Za-z0-9]', '_', sym)}_{tag}"[:64]
+
+
+def push(topic, title, message, priority=4, tags="chart_with_upwards_trend"):
+    body = {"topic": topic, "title": title, "message": message, "priority": priority, "tags": [tags]}
+    if PUBLIC_URL:
+        body["click"] = PUBLIC_URL
+    req = urllib.request.Request(NTFY, data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json", **UA}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        r.read()
+
+
+def scan_once():
+    from analysis import analyze  # local module, same logic as the page
+    for sym in ALERT_MARKETS:
+        try:
+            meta = crypto_candles(sym, ALERT_TF) if sym in CRYPTO else yahoo_candles(sym, ALERT_TF)
+            a = analyze(meta, depth(sym) if sym in CRYPTO else None)
+        except Exception as e:  # one bad market must not stop the rest
+            _push_state["error"] = f"{sym}: {type(e).__name__}: {e}"
+            continue
+        if not a:
+            continue
+        prev = _push_state["last"].get(sym)
+        _push_state["last"][sym] = a["signal"]
+        if prev is None or prev == a["signal"] or a["signal"] not in ("LONG", "SHORT"):
+            continue
+        name = NICE.get(sym, sym)
+        stop_pct = abs(a["price"] - a["stop"]) / a["price"]
+        lev = max(1.0, min(CAPS.get(meta["kind"], 4), int(0.01 / stop_pct * 10) / 10))
+        side = "Long" if a["signal"] == "LONG" else "Short"
+        f = lambda x: f"{x:,.2f}" if abs(a['price']) >= 50 else f"{x:,.4f}"
+        msg = (f"Entry {f(a['price'])} · Stop {f(a['stop'])} · Target 3:1 {f(a['tp1'])}\n"
+               f"Leverage {lev:.1f}x (1% risk) · confidence {a['conf']}% · {ALERT_TF} chart")
+        title = f"{side} {name}: trade is set"
+        tags = "green_circle" if side == "Long" else "red_circle"
+        for t in (topic_for(sym), topic_for("ALL")):
+            try:
+                push(t, title, msg, tags=tags)
+                _push_state["sent"] += 1
+            except Exception as e:
+                _push_state["error"] = f"push: {type(e).__name__}: {e}"
+        print(f"[push] {title} | {msg.splitlines()[0]}", flush=True)
+
+
+def scanner_loop():
+    import threading
+    def run():
+        while True:
+            try:
+                scan_once()
+                _push_state["scans"] += 1
+            except Exception as e:
+                _push_state["error"] = f"{type(e).__name__}: {e}"
+            time.sleep(60)
+    threading.Thread(target=run, daemon=True).start()
+
+
 _fails = {}  # ip -> recent failed login times (rate limit)
 
 
@@ -347,6 +426,15 @@ class Handler(BaseHTTPRequestHandler):
         me = self.who()
         if not me:
             return self.send(401, json.dumps({"error": "locked"}))
+        if u.path == "/api/push/test":
+            if me[0] != "owner":
+                return self.send(403, json.dumps({"error": "Only the owner can send a test."}))
+            try:
+                push(topic_for("ALL"), "DoNoJob test alert",
+                     "Phone alerts work. You'll get one like this when a trade is set.", 3, "bell")
+                return self.send(200, json.dumps({"ok": True}))
+            except Exception as e:
+                return self.send(502, json.dumps({"error": f"{type(e).__name__}: {e}"}))
         if u.path == "/api/keys":
             if me[0] != "owner":
                 return self.send(403, json.dumps({"error": "Only the owner can make keys."}))
@@ -390,6 +478,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html", "text/html; charset=utf-8")
             if u.path == "/api/me":
                 return self.send(200, json.dumps({"role": me[0], "name": me[1]}))
+            if u.path == "/api/push":
+                out = {"enabled": PUSH, "tf": ALERT_TF, "server": NTFY,
+                       "all": topic_for("ALL"),
+                       "markets": {s: topic_for(s) for s in ALERT_MARKETS}}
+                if me[0] == "owner":
+                    out["status"] = {k: v for k, v in _push_state.items() if k != "last"}
+                    out["status"]["signals"] = _push_state["last"]
+                return self.send(200, json.dumps(out))
             if u.path == "/api/signups":
                 if me[0] != "owner":
                     return self.send(403, json.dumps({"error": "Only the owner can see sign-ups."}))
@@ -436,4 +532,7 @@ if __name__ == "__main__":
         print(f"On your phone (same Wi-Fi):  http://{ip}:{PORT}", flush=True)
     if not os.environ.get("OWNER_KEY"):
         print("Your owner key is in the .owner_key file next to server.py", flush=True)
+    if PUSH:
+        scanner_loop()
+        print(f"Phone alerts on: scanning {len(ALERT_MARKETS)} markets every minute ({ALERT_TF})", flush=True)
     ThreadingHTTPServer((host, PORT), Handler).serve_forever()
