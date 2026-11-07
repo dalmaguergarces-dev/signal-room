@@ -110,6 +110,7 @@ canvas:active{cursor:grabbing}
 .links{display:flex;flex-wrap:wrap;gap:6px}
 .links a,.links button{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);text-decoration:none;font-size:13px;cursor:pointer}
 .links a:hover,.links button:hover{border-color:var(--accent)}
+.links a.entropy{border-color:#7b6cf6;color:#c9c2ff}
 .links a.primary{background:var(--accent);color:#1a1405;border-color:var(--accent);font-weight:600}
 .meter{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden}
 .meter i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .4s}
@@ -410,12 +411,24 @@ const TV_TF={"5m":"5","15m":"15","1h":"60","4h":"240","1d":"D"};
 function tvUrl(sym){return "https://www.tradingview.com/chart/?symbol="+encodeURIComponent(TV[sym]||sym)+"&interval="+TV_TF[S.tf]}
 function phantomUrl(sym){const t="https://app.hyperliquid.xyz/trade/"+sym;return "https://phantom.app/ul/browse/"+encodeURIComponent(t)+"?ref="+encodeURIComponent("https://app.hyperliquid.xyz")}
 function tpl(t,sym){return t?t.replaceAll("{SYMBOL}",encodeURIComponent(sym)):""}
+/* ---------- Entropy (entropy.io): leveraged perps on Hyperliquid ----------
+   [market id, max leverage on Entropy, inverse?]. Crypto trades on the main book,
+   stocks / commodities / indices / forex on the "xyz" book. */
+const ENTROPY = {BTC:["BTC",40],ETH:["ETH",25],SOL:["SOL",20],XRP:["XRP",20],DOGE:["DOGE",10],BNB:["BNB",10],AVAX:["AVAX",10],LINK:["LINK",10],PAXG:["PAXG",10],
+  "GC=F":["xyz:GOLD",25],"SI=F":["xyz:SILVER",25],"CL=F":["xyz:CL",20],"BZ=F":["xyz:BRENTOIL",20],"NG=F":["xyz:NATGAS",10],"HG=F":["xyz:COPPER",20],"PL=F":["xyz:PLATINUM",20],
+  SPY:["xyz:SP500",50],"ES=F":["xyz:SP500",50],"^GSPC":["xyz:SP500",50],QQQ:["xyz:XYZ100",30],"NQ=F":["xyz:XYZ100",30],"^IXIC":["xyz:XYZ100",30],
+  "EURUSD=X":["xyz:EUR",50],"GBPUSD=X":["xyz:GBP",50],"USDJPY=X":["xyz:JPY",50,true]};
+["TSLA","NVDA","AAPL","MSFT","AMZN","META","GOOGL"].forEach(t=>ENTROPY[t]=["xyz:"+t,20]);
+["AMD","COIN","MSTR","NFLX","PLTR","HOOD","INTC","ORCL","MU","TSM","AVGO","ARM","GME","RIVN","BABA","CRWD","NET","RDDT","IBM","DELL","QCOM","ASML","LLY"].forEach(t=>ENTROPY[t]=["xyz:"+t,10]);
+function entropyUrl(sym){const e=ENTROPY[sym];return e?"https://entropy.io/trade/"+e[0]:null}
 function linksHtml(sym,primary){
   const isC=CRYPTO.has(sym); let h=`<div class="links">`;
   h+=`<a class="${primary?"primary":""}" href="${tvUrl(sym)}" target="_blank" rel="noopener">Open chart</a>`;
   if(isC){ h+=`<a href="${phantomUrl(sym)}" target="_blank" rel="noopener" title="Opens Hyperliquid inside Phantom's browser">Phantom</a>`;
     h+= S.fomo?`<a href="${tpl(S.fomo,sym)}" target="_blank" rel="noopener">FOMO</a>`:`<button data-open-settings>Set FOMO link</button>`; }
   else if(S.broker){ h+=`<a href="${tpl(S.broker,sym)}" target="_blank" rel="noopener">Broker</a>` }
+  const en=ENTROPY[sym];
+  if(en) h+=`<a class="entropy" href="${entropyUrl(sym)}" target="_blank" rel="noopener" title="Trade ${esc(en[0])} on Entropy, up to ${en[1]}x">Entropy${en[2]?" (flip side)":""}</a>`;
   return h+`</div>`;
 }
 
@@ -536,7 +549,7 @@ function renderBots(sym,d,a){
   red.innerHTML=botHead("Redline")+
     `<div class="bsay">${active?`<b>${L}x ${side}.</b> `:`<b>${L}x</b> if you insist. `}Liquidation sits only <b>${(liqDist*100).toFixed(2)}%</b> away. A normal ${S.tf} candle here moves ${atrPct.toFixed(2)}%. <b>${hits} of the last ${cs.length}</b> candles would have liquidated this ${side} inside a single bar.</div>`+
     `<div class="kv"><div><span>Leverage</span><strong>${L}x</strong></div><div><span>Liq. price</span><strong>${fmt(liqPx,a.price)}</strong></div><div><span>Wiped by</span><strong>${hits}/${cs.length}</strong></div></div>`+
-    `<div class="warn">${K.typical[0].toUpperCase()+K.typical.slice(1)}. ${liqDist<atrPct/100?"Liquidation is inside normal noise on this timeframe. Even a correct call usually gets stopped out first.":"Liquidation is outside one normal candle, but one bad wick still ends the trade."}</div>`+
+    `<div class="warn">${ENTROPY[sym]?`Entropy allows up to ${ENTROPY[sym][1]}x here${ENTROPY[sym][2]?" (it lists JPY vs USD, so take the opposite side)":""}`:K.typical[0].toUpperCase()+K.typical.slice(1)}. ${liqDist<atrPct/100?"Liquidation is inside normal noise on this timeframe. Even a correct call usually gets stopped out first.":"Liquidation is outside one normal candle, but one bad wick still ends the trade."}</div>`+
     linksHtml(sym,false);
 }
 
