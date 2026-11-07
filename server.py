@@ -305,6 +305,29 @@ def push(topic, title, message, priority=4, tags="chart_with_upwards_trend"):
         r.read()
 
 
+# ------------------------------------------------------------- past odds
+# "Chance" = how these exact rules did on this market's recent history (see
+# analysis.replay). A call only goes out if Target 1 was reached in at least
+# MIN_CHANCE % of at least MIN_SAMPLES past calls.
+MIN_CHANCE = float(os.environ.get("MIN_CHANCE", "50"))
+MIN_SAMPLES = int(os.environ.get("MIN_SAMPLES", "8"))
+_odds = {}
+
+
+def odds_for(sym, tf, meta=None):
+    from analysis import replay
+    k = (sym, tf)
+    hit = _odds.get(k)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    meta = meta or (crypto_candles(sym, tf) if sym in CRYPTO else yahoo_candles(sym, tf))
+    r = replay(meta)
+    r["passes"] = r["closed"] >= MIN_SAMPLES and (r["t1_rate"] or 0) >= MIN_CHANCE
+    r.update(min_chance=MIN_CHANCE, min_samples=MIN_SAMPLES, tf=tf, symbol=sym)
+    _odds[k] = (time.time(), r)
+    return r
+
+
 def scan_once():
     from analysis import analyze  # local module, same logic as the page
     for sym in ALERT_MARKETS:
@@ -320,6 +343,11 @@ def scan_once():
         _push_state["last"][sym] = a["signal"]
         if prev is None or prev == a["signal"] or a["signal"] not in ("LONG", "SHORT"):
             continue
+        o = odds_for(sym, ALERT_TF, meta)
+        if not o["passes"]:
+            print(f"[push] skipped {sym} {a['signal']}: past odds too low "
+                  f"(T1 {o['t1_rate']}% of {o['closed']} calls)", flush=True)
+            continue
         name = NICE.get(sym, sym)
         stop_pct = abs(a["price"] - a["stop"]) / a["price"]
         lev = max(1.0, min(CAPS.get(meta["kind"], 4), int(0.01 / stop_pct * 10) / 10))
@@ -327,6 +355,7 @@ def scan_once():
         f = lambda x: f"{x:,.2f}" if abs(a['price']) >= 50 else f"{x:,.4f}"
         msg = (f"Entry {f(a['price'])} · Stop {f(a['stop'])}\n"
                f"Target 1 (3R) {f(a['tp1'])} · Target 2 (6R) {f(a['tp2'])}\n"
+               f"Past odds: Target 1 hit in {o['t1_rate']}% of {o['closed']} calls\n"
                f"Leverage {lev:.1f}x (1% risk) · confidence {a['conf']}% · {ALERT_TF} chart")
         title = f"{side} {name}: trade is set"
         tags = "green_circle" if side == "Long" else "red_circle"
@@ -773,6 +802,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html", "text/html; charset=utf-8")
             if u.path == "/api/me":
                 return self.send(200, json.dumps({"role": me[0], "name": me[1]}))
+            if u.path == "/api/odds":
+                sym = qs.get("symbol", "BTC").upper()
+                tf = qs.get("tf", "4h")
+                if tf not in YAHOO_TF:
+                    return self.send(400, json.dumps({"error": "bad timeframe"}))
+                return self.send(200, json.dumps(odds_for(sym, tf)))
             if u.path == "/api/wallet/challenge":
                 if not leaderboard:
                     return self.send(503, json.dumps({"error": "The leaderboard is off on this server."}))

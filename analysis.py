@@ -193,3 +193,43 @@ def analyze(meta, depth=None):
             signal = "WAIT"
     return {"price": price, "score": score, "conf": conf, "signal": signal, "A": A,
             "stop": stop, "tp1": tp1, "tp2": tp2, "dir": d, "chop": chop, "rr_block": rr_block}
+
+
+def replay(meta, warmup=210):
+    """Past results of these exact rules on this market's history: walk forward candle
+    by candle, and for every new call see what was hit first. The plan being scored:
+    half off at Target 1 with the stop moved to entry, the rest to Target 2.
+    (No past order book exists, so that one factor is left out here.)"""
+    cs = meta.get("candles") or []
+    out = {"calls": 0, "stop": 0, "t1_be": 0, "t2": 0, "open": 0}
+    prev = None
+    for i in range(warmup, len(cs) - 1):
+        a = analyze({**meta, "candles": cs[:i + 1], "open": True})
+        sig = a["signal"] if a else None
+        if sig in ("LONG", "SHORT") and sig != prev:
+            out["calls"] += 1
+            d, entry, stop, t1, t2 = a["dir"], a["price"], a["stop"], a["tp1"], a["tp2"]
+            hit1, res = False, "open"
+            for c in cs[i + 1:]:
+                guard = entry if hit1 else stop
+                if (c["l"] <= guard) if d == 1 else (c["h"] >= guard):
+                    res = "t1_be" if hit1 else "stop"
+                    break
+                if (c["h"] >= t1) if d == 1 else (c["l"] <= t1):
+                    hit1 = True
+                if (c["h"] >= t2) if d == 1 else (c["l"] <= t2):
+                    res = "t2"
+                    break
+            out[res] += 1
+        prev = sig
+    closed = out["calls"] - out["open"]
+    reached1 = out["t1_be"] + out["t2"]
+    out.update(
+        closed=closed,
+        t1_rate=round(100 * reached1 / closed) if closed else None,
+        t2_rate=round(100 * out["t2"] / closed) if closed else None,
+        stop_rate=round(100 * out["stop"] / closed) if closed else None,
+        result_r=round(4.5 * out["t2"] + 1.5 * out["t1_be"] - out["stop"], 1),
+        bars=len(cs) - warmup,
+    )
+    return out

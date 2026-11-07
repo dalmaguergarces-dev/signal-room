@@ -155,6 +155,10 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
 .lb .st{font:12px var(--mono);color:var(--muted);text-align:right;min-width:7.5em}
 .lbme{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:0 14px 12px;font-size:14px}
 @media (max-width:760px){.lb li{grid-template-columns:2em minmax(0,1fr) auto}.lb .st{grid-column:2/-1;text-align:left}}
+.odds{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:grid;gap:6px}
+.oddsTop{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:var(--muted)}
+.oddsTop b{font:800 22px var(--display)}
+.oddsSub{font-size:12px;color:var(--muted)}
 .disclaimer{color:var(--muted);font-size:12px;padding:0 max(16px,2vw) 24px;max-width:900px}
 
 /* ---------- Phone layout (iPhone) ---------- */
@@ -510,6 +514,26 @@ function linksHtml(sym,primary){
   return h+`</div>`;
 }
 
+/* ---------- past odds: how these rules did on this market's own history ---------- */
+const oddsCache={};
+async function oddsFor(sym){
+  const k=sym+"|"+S.tf, c=oddsCache[k];
+  if(c&&Date.now()-c.t<600000) return c.o;
+  try{const o=await getJSON(`/api/odds?symbol=${encodeURIComponent(sym)}&tf=${S.tf}`);oddsCache[k]={t:Date.now(),o};return o}catch{return c?c.o:null}
+}
+function oddsLine(o,sym){
+  if(!o) return "";
+  if(!o.closed) return `No past ${S.tf} calls on ${esc(label(sym))} to learn from yet, so the chance is unknown.`;
+  return `Target 1 reached in <b>${o.t1_rate}%</b> of ${o.closed} past calls · Target 2 in <b>${o.t2_rate}%</b> · stopped out in ${o.stop_rate}% · overall ${o.result_r>=0?"+":""}${o.result_r}R`;
+}
+function oddsBox(o){
+  if(!o||!o.closed) return "";
+  const good=o.passes, c=good?"var(--long)":"var(--short)";
+  return `<div class="odds" style="border-color:${c}"><div class="oddsTop"><span>Chance to reach Target 1</span><b style="color:${c}">${o.t1_rate}%</b></div>
+    <div class="meter"><i style="width:${o.t1_rate}%;background:${c}"></i></div>
+    <div class="oddsSub">Based on ${o.closed} past calls with these exact rules on this market's ${o.tf} chart. ${good?"Clears":"Below"} the bar of ${o.min_chance}% from at least ${o.min_samples} calls. Past results don't guarantee future ones.</div></div>`;
+}
+
 /* ---------- data loading ---------- */
 async function getJSON(u){const r=await fetch(u,{cache:"no-store"});if(r.status===401){const e=await r.json().catch(()=>({}));location.href=e.error==="kicked"?"/login?why=kicked":"/login";throw new Error("locked")}const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
 
@@ -585,6 +609,10 @@ async function refresh(sym,withDepth){
     data[sym]=data[sym]||{}; data[sym].meta=j; data[sym].candles=j.candles; data[sym].err=null;
     if(withDepth&&CRYPTO.has(sym)) data[sym].depth=await getJSON(`/api/depth?symbol=${sym}`);
     data[sym].a=analyze(sym);
+    const a0=data[sym].a, live0=a0&&(a0.signal==="LONG"||a0.signal==="SHORT");
+    if(a0&&(sym===S.sel||live0)) data[sym].odds=await oddsFor(sym);
+    const od=data[sym].odds;
+    if(live0&&od&&od.tf===S.tf&&!od.passes){a0.oddsBlock={side:a0.signal};a0.signal="WAIT"}
     onSignal(sym);
   }catch(e){ data[sym]=data[sym]||{}; data[sym].err=String(e.message||e) }
 }
@@ -606,7 +634,8 @@ function checkAlert(sym){
 }
 function fireAlert(sym,a){
   const k=kellyFor(sym,a), side=a.signal==="LONG"?"Long":"Short", name=label(sym);
-  const body=`Entry ${fmt(a.price)} · Stop ${fmt(a.stop,a.price)} · T1 ${fmt(a.tp1,a.price)} (3R) · T2 ${fmt(a.tp2,a.price)} (6R) · ${k.lev.toFixed(1)}x`;
+  const o=data[sym].odds;
+  const body=`Entry ${fmt(a.price)} · Stop ${fmt(a.stop,a.price)} · T1 ${fmt(a.tp1,a.price)} (3R) · T2 ${fmt(a.tp2,a.price)} (6R) · ${k.lev.toFixed(1)}x${o&&o.closed?` · past chance to T1 ${o.t1_rate}% (${o.closed} calls)`:""}`;
   const el=document.createElement("div"); el.className="toast "+a.signal; el.setAttribute("role","alert");
   el.innerHTML=`<h3>${side} ${esc(name)}: trade is set</h3>
     <div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div>
@@ -697,11 +726,14 @@ function renderBots(sym,d,a){
   let say;
   if(a.signal==="CLOSED") say=`The ${esc(label(sym))} market is closed. I don't call trades on stale candles. Last close ${fmt(a.price)}.`;
   else if(active) say=`<b>Go ${side} ${esc(label(sym))}.</b> ${a.F.filter(f=>Math.sign(f.pts)===a.dir).map(f=>f.name.split(" (")[0].toLowerCase()).slice(0,4).join(", ")} line up on the ${S.tf}.`;
+  else if(a.oddsBlock) say=`<b>Wait. Odds too low.</b> ${esc(label(sym))} has a ${a.oddsBlock.side.toLowerCase()} setup, but on past data this setup only reached Target 1 in ${d.odds.t1_rate??0}% of ${d.odds.closed} calls. I only call trades that clear ${d.odds.min_chance}% from at least ${d.odds.min_samples} calls.`;
   else if(a.rrBlock) say=`<b>Wait.</b> ${esc(label(sym))} leans ${a.rrBlock.side.toLowerCase()}, but a ${a.rrBlock.side==="LONG"?"sell":"buy"} zone at ${fmt(a.rrBlock.level,a.price)} sits before Target 1. I only call A+ trades with a clear path to 3R and beyond.`;
   else if(a.noisy) say=`<b>Wait, this is noise.</b> ${esc(label(sym))} is chopping sideways (chop index ${a.chop.toFixed(0)}). Moves inside the grey band mean nothing. I'll call it when it breaks out.`;
   else say=`<b>Wait.</b> Signals on ${esc(label(sym))} disagree (score ${a.score.toFixed(1)}). No edge here yet.`;
   atlas.innerHTML=botHead("Atlas")+`<div class="bsay">${say}</div>`+
-    `<div class="meter" title="Confidence"><i style="width:${a.signal==="CLOSED"?0:a.conf}%"></i></div>`+
+    `<div class="meter" title="Signal strength"><i style="width:${a.signal==="CLOSED"?0:a.conf}%"></i></div>`+
+    (active||a.oddsBlock?oddsBox(d.odds):"")+
+    (d.odds?`<div class="warn">Track record here: ${oddsLine(d.odds,sym)}</div>`:"")+
     (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target 1 · 3R</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>
     <div class="kv" style="grid-template-columns:2fr 1fr"><div><span>Target 2 · 6R (let it run)</span><strong>${fmt(a.tp2,a.price)}</strong></div><div><span>Plan</span><strong>½ off at T1</strong></div></div>
     <div class="warn">Swing trade on the ${S.tf} chart: this can take days. Take half off at Target 1 and move the stop to entry, then let the rest run to Target 2.</div>`:"")+
