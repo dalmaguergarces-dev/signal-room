@@ -160,6 +160,22 @@ def check_key(key):
     return None
 
 
+# ------------------------------------------------------------ instant key page
+# Followers type their TikTok @ at /get-key and get their own key right away.
+# TikTok gives apps no way to check who follows you, so the page asks them to
+# follow and you block anyone who doesn't (REVOKED, using their @ without dots).
+# Turn the page off with SIGNUP=off.
+SIGNUP = os.environ.get("SIGNUP", "on").lower() != "off"
+TIKTOK = os.environ.get("TIKTOK_HANDLE", "d0n0j0b").lstrip("@")
+HANDLE_RE = re.compile(r"^[a-z0-9_.]{2,24}$")
+_signups = []   # recent sign-ups since the server started: (time, handle)
+_signup_ips = {}  # ip -> sign-up times (rate limit)
+
+
+def handle_to_name(handle):
+    return handle.replace(".", "_")
+
+
 _fails = {}  # ip -> recent failed login times (rate limit)
 
 
@@ -187,6 +203,13 @@ input{width:100%;font:16px "JetBrains Mono",monospace;padding:12px 14px;border-r
 input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{width:100%;margin-top:10px;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#1a1405;font-weight:600;font-size:16px;font-family:inherit;cursor:pointer}
 .err{color:var(--short);min-height:1.5em;margin:10px 0 0;font-size:14px}
+a{color:var(--accent)}
+.alt{margin:14px 0 0;font-size:14px;color:var(--muted)}
+.check{display:flex;gap:10px;align-items:flex-start;text-align:left;font-size:13px;color:var(--muted);margin:12px 0 0}
+.check input{width:20px;height:20px;flex:none;margin:1px 0 0;accent-color:var(--accent)}
+.follow{display:inline-block;margin:0 0 16px;padding:8px 14px;border-radius:999px;border:1px solid var(--accent);text-decoration:none;font-weight:600}
+.keybox{font:15px "JetBrains Mono",monospace;background:var(--bg);border:1px dashed var(--accent);border-radius:10px;padding:12px;word-break:break-all;user-select:all}
+.small{font-size:13px;color:var(--muted);margin:10px 0 0}
 </style></head><body>
 <form class="card" method="post" action="/login" id="f">
 <img src="/avatar.png" alt="">
@@ -194,6 +217,7 @@ button{width:100%;margin-top:10px;padding:12px;border:0;border-radius:10px;backg
 <input name="key" id="key" type="password" autocomplete="current-password" placeholder="your key" aria-label="Access key" required>
 <button type="submit">Enter the room</button>
 <div class="err" role="alert">__ERR__</div>
+__GETKEY__
 </form>
 <script>
 // Invite links carry the key after the # so it never reaches the server's logs.
@@ -201,6 +225,36 @@ function useInvite(){var m=location.hash.match(/^#k-(.+)$/);
 if(m){document.getElementById("key").value=decodeURIComponent(m[1]);history.replaceState(null,"","/login");document.getElementById("f").submit()}}
 useInvite();window.addEventListener("hashchange",useInvite);
 </script></body></html>"""
+
+
+def page(body_html):
+    """Reuse the login page's head and styles around different content."""
+    head = LOGIN_HTML.split("<body>")[0]
+    return head + "<body><div class=\"card\">" + body_html + "</div></body></html>"
+
+
+def getkey_form(err=""):
+    return page(f"""<form method="post" action="/get-key">
+<img src="/avatar.png" alt=""><h1>Get your key</h1>
+<p>Free for followers of DoNoJob.</p>
+<a class="follow" href="https://www.tiktok.com/@{TIKTOK}" target="_blank" rel="noopener">Follow @{TIKTOK} on TikTok</a>
+<input name="handle" autocomplete="username" placeholder="your TikTok @" aria-label="Your TikTok username" required maxlength="25">
+<label class="check"><input type="checkbox" name="follows" required> I follow @{TIKTOK}. Keys of people who don't follow get blocked.</label>
+<label class="check"><input type="checkbox" name="risk" required> I understand the signals are automated, often wrong and not financial advice. Leverage can wipe out my whole position. I trade at my own risk.</label>
+<button type="submit">Get my key</button>
+<div class="err" role="alert">{err}</div>
+<p class="alt">Already have a key? <a href="/login">Log in</a></p></form>""")
+
+
+def getkey_done(handle, key):
+    k = json.dumps(key)[1:-1]
+    return page(f"""<img src="/avatar.png" alt=""><h1>You're in, @{handle}</h1>
+<p>This is your personal key. Save it to log in on your other devices.</p>
+<div class="keybox" id="k">{k}</div>
+<button type="button" id="c">Copy key</button>
+<a href="/"><button type="button">Enter the room</button></a>
+<p class="small">Don't share it. It's tied to your @, and if it gets passed around it gets blocked.</p>
+<script>document.getElementById("c").onclick=function(){{var b=this;navigator.clipboard&&navigator.clipboard.writeText(document.getElementById("k").textContent).then(function(){{b.textContent="Copied"}})}}</script>""")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -245,7 +299,34 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, f.read(), ctype)
 
     def login_page(self, err="", code=200):
-        return self.send(code, LOGIN_HTML.replace("__ERR__", err), "text/html; charset=utf-8")
+        extra = '<p class="alt">No key yet? <a href="/get-key">Get one free</a></p>' if SIGNUP else ""
+        html = LOGIN_HTML.replace("__ERR__", err).replace("__GETKEY__", extra)
+        return self.send(code, html, "text/html; charset=utf-8")
+
+    def get_key(self, body):
+        if not SIGNUP:
+            return self.redirect("/login")
+        f = dict(urllib.parse.parse_qsl(body))
+        handle = f.get("handle", "").strip().lstrip("@").lower()
+        html = lambda e, c: self.send(c, getkey_form(e), "text/html; charset=utf-8")
+        if not HANDLE_RE.match(handle):
+            return html("That doesn't look like a TikTok @. Use letters, numbers, _ and . only.", 400)
+        if not (f.get("follows") and f.get("risk")):
+            return html("Tick both boxes to continue.", 400)
+        name = handle_to_name(handle)
+        if name in REVOKED:
+            return html("This @ is blocked. Message @" + TIKTOK + " on TikTok if you think that's a mistake.", 403)
+        ip, now = self.ip(), time.time()
+        recent = [t for t in _signup_ips.get(ip, []) if now - t < 3600]
+        if len(recent) >= 5:
+            return html("Too many keys from this connection. Try again in an hour.", 429)
+        _signup_ips[ip] = recent + [now]
+        key = friend_key(name)
+        _signups.append((now, handle))
+        del _signups[:-200]
+        print(f"[signup] key issued to @{handle}", flush=True)
+        self.send(200, getkey_done(handle, key), "text/html; charset=utf-8",
+                  {"Set-Cookie": self.cookie_for(key)})
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
@@ -261,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect("/", self.cookie_for(key))
             _fails.setdefault(ip, []).append(time.time())
             return self.login_page("That key doesn't work. Check it and try again.", 401)
+        if u.path == "/get-key":
+            return self.get_key(body)
         me = self.who()
         if not me:
             return self.send(401, json.dumps({"error": "locked"}))
@@ -291,6 +374,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("icon.png", "image/png")
             if u.path == "/login":
                 return self.redirect("/") if self.who() else self.login_page()
+            if u.path == "/get-key":
+                if not SIGNUP:
+                    return self.redirect("/login")
+                return self.send(200, getkey_form(), "text/html; charset=utf-8")
             if u.path == "/logout":
                 return self.redirect("/login", self.cookie_for("", 0))
             # ---- key required from here on
@@ -303,6 +390,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html", "text/html; charset=utf-8")
             if u.path == "/api/me":
                 return self.send(200, json.dumps({"role": me[0], "name": me[1]}))
+            if u.path == "/api/signups":
+                if me[0] != "owner":
+                    return self.send(403, json.dumps({"error": "Only the owner can see sign-ups."}))
+                return self.send(200, json.dumps({
+                    "signup": SIGNUP, "tiktok": TIKTOK,
+                    "recent": [{"t": int(t * 1000), "handle": h,
+                                "blocked": handle_to_name(h) in REVOKED} for t, h in reversed(_signups)]}))
             if u.path == "/api/candles":
                 sym = qs.get("symbol", "BTC").upper()
                 tf = qs.get("tf", "15m")

@@ -262,6 +262,14 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
       <p class="kmuted" id="kNote"></p>
       <p class="kmuted">To block this friend later, add their name to <b>REVOKED</b> in your host's settings.</p>
     </div>
+    <div id="suBox" hidden style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
+      <h2 style="font-size:17px;margin:0 0 6px">TikTok followers</h2>
+      <p class="kmuted">Put this link in your TikTok bio. Followers get their own key there instantly.</p>
+      <div class="field"><label for="suLink">Key page link</label><input id="suLink" readonly></div>
+      <div class="links"><button type="button" id="suCopy">Copy link</button></div>
+      <p class="kmuted" style="margin-top:12px">New since the server last started. Tap an @ to check they follow you. To block one, add their @ to <b>REVOKED</b> (dots become _).</p>
+      <ul id="suList" style="list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:200px;overflow:auto"></ul>
+    </div>
   </form>
 </dialog>
 
@@ -361,13 +369,23 @@ function analyze(sym){
   const noisy=chop>61.8; if(noisy&&signal!=="WAIT") signal="WAIT";
   if(d.meta.kind!=="crypto"&&!d.meta.open) signal="CLOSED";
   const dir=signal==="SHORT"?-1:1;
-  const stop=price-dir*1.5*A, tp1=price+dir*1.5*1.5*A, tp2=price+dir*3*1.5*A;
+  // Always 3:1 reward-to-risk: stop 1.5 ATR away, target 3x that distance.
+  const risk=1.5*A, RR=3, stop=price-dir*risk, tp1=price+dir*RR*risk, tp2=tp1;
+  // Skip the call if an open opposing zone (sell zone for a long, buy zone for a short)
+  // sits within 2R, because price would likely stall there before reaching 3:1.
+  let rrBlock=null;
+  if(signal==="LONG"||signal==="SHORT"){
+    const opp=Z.fvg.concat(Z.ob).filter(z=>!z.filled&&z.type===-dir)
+      .map(z=>dir===1?z.bot:z.top).filter(lv=>dir===1?(lv>price*1.0005&&lv<price+2*risk):(lv<price*.9995&&lv>price-2*risk))
+      .sort((p,q)=>Math.abs(p-price)-Math.abs(q-price));
+    if(opp.length){rrBlock={level:opp[0],side:signal};signal="WAIT"}
+  }
   const chg=(price/cs.at(-2).c-1)*100;
   const lastT=cs.at(-1).t; let ref;
   if(d.meta.kind==="crypto"){ ref=[...cs].reverse().find(x=>x.t<=lastT-864e5)||cs[0] }
   else { const day=new Date(lastT).toDateString(); ref=[...cs].reverse().find(x=>new Date(x.t).toDateString()!==day)||cs[0] }
   const chgDay=(price/ref.c-1)*100;
-  return {price,score,conf,signal,F,R,A,stop,tp1,tp2,e20,e50,chg,chgDay,dir,Z,chop,noisy};
+  return {price,score,conf,signal,F,R,A,stop,tp1,tp2,RR,rrBlock,e20,e50,chg,chgDay,dir,Z,chop,noisy};
 }
 
 /* Fair value gaps (3-candle imbalance) and order blocks (last opposite candle before a
@@ -440,7 +458,14 @@ async function getJSON(u){const r=await fetch(u,{cache:"no-store"});if(r.status=
   let me; try{me=await getJSON("/api/me")}catch{return}
   if(me.role!=="owner") return;
   const btn=document.getElementById("keysBtn"), dlgK=document.getElementById("keysDlg"); btn.hidden=false;
-  btn.addEventListener("click",()=>{document.getElementById("kOut").hidden=true;dlgK.showModal();document.getElementById("kName").focus()});
+  async function loadSignups(){
+    let j; try{j=await getJSON("/api/signups")}catch{return}
+    const box=document.getElementById("suBox"); box.hidden=!j.signup; if(!j.signup) return;
+    document.getElementById("suLink").value=location.origin+"/get-key";
+    document.getElementById("suList").innerHTML=j.recent.length?j.recent.map(r=>`<li style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><a href="https://www.tiktok.com/@${encodeURIComponent(r.handle)}" target="_blank" rel="noopener" style="color:var(--fg)">@${esc(r.handle)}</a><span style="color:var(--muted)">${r.blocked?"blocked · ":""}${new Date(r.t).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</span></li>`).join(""):`<li class="kmuted">No sign-ups yet.</li>`;
+  }
+  document.getElementById("suCopy").addEventListener("click",e=>copy("suLink",e.target));
+  btn.addEventListener("click",()=>{document.getElementById("kOut").hidden=true;loadSignups();dlgK.showModal();document.getElementById("kName").focus()});
   document.getElementById("kClose").addEventListener("click",()=>dlgK.close());
   document.getElementById("keysForm").addEventListener("submit",async e=>{
     e.preventDefault(); const note=document.getElementById("kNote");
@@ -522,11 +547,12 @@ function renderBots(sym,d,a){
   let say;
   if(a.signal==="CLOSED") say=`The ${esc(label(sym))} market is closed. I don't call trades on stale candles. Last close ${fmt(a.price)}.`;
   else if(active) say=`<b>Go ${side} ${esc(label(sym))}.</b> ${a.F.filter(f=>Math.sign(f.pts)===a.dir).map(f=>f.name.split(" (")[0].toLowerCase()).slice(0,4).join(", ")} line up on the ${S.tf}.`;
+  else if(a.rrBlock) say=`<b>Wait.</b> ${esc(label(sym))} leans ${a.rrBlock.side.toLowerCase()}, but a ${a.rrBlock.side==="LONG"?"sell":"buy"} zone at ${fmt(a.rrBlock.level,a.price)} sits in the way of a 3:1 target. I only call trades that can pay 3:1.`;
   else if(a.noisy) say=`<b>Wait, this is noise.</b> ${esc(label(sym))} is chopping sideways (chop index ${a.chop.toFixed(0)}). Moves inside the grey band mean nothing. I'll call it when it breaks out.`;
   else say=`<b>Wait.</b> Signals on ${esc(label(sym))} disagree (score ${a.score.toFixed(1)}). No edge here yet.`;
   atlas.innerHTML=botHead("Atlas")+`<div class="bsay">${say}</div>`+
     `<div class="meter" title="Confidence"><i style="width:${a.signal==="CLOSED"?0:a.conf}%"></i></div>`+
-    (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>`:"")+
+    (active?`<div class="kv"><div><span>Entry</span><strong>${fmt(a.price)}</strong></div><div><span>Stop</span><strong>${fmt(a.stop,a.price)}</strong></div><div><span>Target 3:1</span><strong>${fmt(a.tp1,a.price)}</strong></div></div>`:"")+
     linksHtml(sym,true);
 
   // Kelly: leverage from risk budget and stop distance
@@ -536,7 +562,7 @@ function renderBots(sym,d,a){
   const loss=notional*stopPct;
   kelly.classList.toggle("hot",!!active);
   kelly.innerHTML=botHead("Kelly")+
-    `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
+    `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong, and wins about <b>$${(loss*a.RR).toFixed(0)}</b> at the 3:1 target.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
     (active?`<div class="kv"><div><span>Leverage</span><strong>${lev.toFixed(1)}x</strong></div><div><span>Position</span><strong>$${notional.toFixed(0)}</strong></div><div><span>Liq. ≈</span><strong>${lev<=1?"none":fmt(liq,a.price)}</strong></div></div>`:"")+
     (raw>cap&&active?`<div class="warn">Math allowed ${raw.toFixed(1)}x but I cap at ${cap}x on ${K.label}.</div>`:"")+
     linksHtml(sym,false);
