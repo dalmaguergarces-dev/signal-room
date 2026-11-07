@@ -31,7 +31,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UA = {"User-Agent": "Mozilla/5.0 (SignalRoom local app)"}
 
 CRYPTO = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT",
-          "DOGE": "DOGEUSDT", "BNB": "BNBUSDT", "AVAX": "AVAXUSDT", "LINK": "LINKUSDT"}
+          "DOGE": "DOGEUSDT", "BNB": "BNBUSDT", "AVAX": "AVAXUSDT", "LINK": "LINKUSDT",
+          "PAXG": "PAXGUSDT"}  # PAXG = gold-backed token, trades 24/7
+
+# Bar length in seconds, used to tell whether a market is trading right now
+TF_SEC = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+def asset_class(sym):
+    if sym in CRYPTO:
+        return "crypto"
+    if sym.endswith("=X"):
+        return "forex"
+    if sym.endswith("=F"):
+        return "futures"
+    if sym.startswith("^"):
+        return "index"
+    return "stock"
 
 # Yahoo: interval and how much history to request for it
 YAHOO_TF = {"5m": ("5m", "5d"), "15m": ("15m", "1mo"), "1h": ("60m", "3mo"),
@@ -87,10 +103,10 @@ def yahoo_candles(sym, tf):
                            "l": min(x["l"] for x in g), "c": g[-1]["c"],
                            "v": sum(x["v"] for x in g)})
         candles = merged
-    period = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
-    now = time.time()
-    is_open = bool(period) and period.get("start", 0) <= now <= period.get("end", 0)
-    return {"symbol": sym, "kind": "stock", "source": "Yahoo Finance",
+    # Open = the newest bar is fresh. Works for stocks, futures (23h/day) and forex (24h/5d).
+    last = (ts[-1] if ts else 0)
+    is_open = time.time() - last <= TF_SEC[tf] + 20 * 60
+    return {"symbol": sym, "kind": asset_class(sym), "source": "Yahoo Finance",
             "name": meta.get("shortName") or meta.get("longName") or sym,
             "open": is_open, "flow": "estimated", "candles": candles[-500:]}
 

@@ -191,7 +191,8 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
     <div class="ptitle"><span>Scanner</span><span id="scanCount"></span></div>
     <ul class="scan" id="scan" role="listbox" aria-label="Watchlist"></ul>
     <form class="add" id="addForm">
-      <input id="addInput" placeholder="Add ticker: AAPL, ETH, ^GSPC" aria-label="Add a ticker">
+      <input id="addInput" list="marketList" placeholder="Add: gold, AAPL, EURUSD=X" aria-label="Add a market" autocomplete="off">
+      <datalist id="marketList"></datalist>
       <button class="hbtn" type="submit">Add</button>
     </form>
   </section>
@@ -266,19 +267,34 @@ dialog h2{font:800 20px var(--display);margin:0 0 12px}
 <script>
 "use strict";
 /* ---------- persistent prefs (per browser) ---------- */
-const DEFAULT_WATCH = ["BTC","ETH","SOL","SPY","QQQ","TSLA","NVDA","AAPL"];
-const CRYPTO = new Set(["BTC","ETH","SOL","XRP","DOGE","BNB","AVAX","LINK"]);
+const DEFAULT_WATCH = ["BTC","ETH","SOL","PAXG","GC=F","SI=F","CL=F","EURUSD=X","SPY","QQQ","TSLA","NVDA","AAPL"];
+const CRYPTO = new Set(["BTC","ETH","SOL","XRP","DOGE","BNB","AVAX","LINK","PAXG"]);
+/* Leverage desk caps per market type, and what brokers typically allow */
+const CLASS = {
+  crypto:{cap:10,label:"crypto",typical:"crypto exchanges allow 50–125x"},
+  futures:{cap:20,label:"gold, oil and futures",typical:"CFD brokers allow 20–100x on gold and oil"},
+  forex:{cap:30,label:"forex",typical:"forex brokers allow 30–500x"},
+  index:{cap:20,label:"indices",typical:"CFD brokers allow 20–100x on indices"},
+  stock:{cap:4,label:"stocks",typical:"stock margin is 2–4x, CFDs up to 20x"}};
+/* Quick picks for the add box: [ticker, name] */
+const PICKS = [["PAXG","Gold 24/7 (PAXG token)"],["GC=F","Gold futures"],["SI=F","Silver futures"],["CL=F","Oil WTI"],["BZ=F","Oil Brent"],["NG=F","Natural gas"],["HG=F","Copper"],["PL=F","Platinum"],
+  ["ES=F","S&P 500 futures"],["NQ=F","Nasdaq futures"],["YM=F","Dow futures"],["^GSPC","S&P 500 index"],["^IXIC","Nasdaq index"],["^GDAXI","DAX"],["^VIX","VIX fear index"],
+  ["EURUSD=X","EUR/USD"],["GBPUSD=X","GBP/USD"],["USDJPY=X","USD/JPY"],["AUDUSD=X","AUD/USD"],["USDCHF=X","USD/CHF"],["USDCAD=X","USD/CAD"],
+  ["BTC","Bitcoin"],["ETH","Ethereum"],["SOL","Solana"],["XRP","XRP"],["DOGE","Dogecoin"],["BNB","BNB"],["AVAX","Avalanche"],["LINK","Chainlink"],
+  ["SPY","S&P 500 ETF"],["QQQ","Nasdaq 100 ETF"],["TSLA","Tesla"],["NVDA","Nvidia"],["AAPL","Apple"],["MSFT","Microsoft"],["AMZN","Amazon"],["META","Meta"],["GOOGL","Google"],["AMD","AMD"],["COIN","Coinbase"],["MSTR","MicroStrategy"]];
+const PICK_NAME = Object.fromEntries(PICKS);
+const ALIAS = {GOLD:"GC=F",SILVER:"SI=F",OIL:"CL=F",BRENT:"BZ=F",GAS:"NG=F",COPPER:"HG=F",EURUSD:"EURUSD=X",GBPUSD:"GBPUSD=X",USDJPY:"USDJPY=X",SP500:"^GSPC",NASDAQ:"^IXIC",DAX:"^GDAXI",VIX:"^VIX",BITCOIN:"BTC"};
 const TFS = ["5m","15m","1h","4h","1d"];
 function load(k,d){try{const v=localStorage.getItem("sr_"+k);return v==null?d:JSON.parse(v)}catch{return d}}
 function save(k,v){try{localStorage.setItem("sr_"+k,JSON.stringify(v))}catch{}}
 const S = {
-  watch: load("watch", DEFAULT_WATCH),
+  watch: (()=>{const w=load("watch",DEFAULT_WATCH); if(!load("v2",false)){["PAXG","GC=F","SI=F","CL=F","EURUSD=X"].forEach(s=>{if(!w.includes(s))w.splice(3,0,s)}); save("watch",w); save("v2",true)} return w})(),
   tf: load("tf","15m"),
   sel: load("sel","BTC"),
   acct: load("acct",1000), risk: load("risk",1), maxLev: load("maxLev",100),
   fomo: load("fomo",""), broker: load("broker",""),
   sound: false,
-  layers: load("layers",{fvg:true,big:true,noise:true}),
+  layers: (()=>{const l=load("layers",{fvg:true,big:true,noise:false}); if(!load("v3",false)){l.noise=false; save("layers",l); save("v3",true)} return l})(),
 };
 function renderLayers(){document.querySelectorAll("[data-layer]").forEach(b=>b.setAttribute("aria-pressed",!!S.layers[b.dataset.layer]))}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-layer]");if(!b)return;S.layers[b.dataset.layer]=!S.layers[b.dataset.layer];save("layers",S.layers);renderLayers();const d=data[S.sel];drawChart(d,d&&d.a)});
@@ -342,7 +358,7 @@ function analyze(sym){
   const conf=Math.min(100,Math.round(Math.abs(score)/maxPts*100));
   let signal = score>=maxPts*.42?"LONG":score<=-maxPts*.42?"SHORT":"WAIT";
   const noisy=chop>61.8; if(noisy&&signal!=="WAIT") signal="WAIT";
-  if(d.meta.kind==="stock"&&!d.meta.open) signal="CLOSED";
+  if(d.meta.kind!=="crypto"&&!d.meta.open) signal="CLOSED";
   const dir=signal==="SHORT"?-1:1;
   const stop=price-dir*1.5*A, tp1=price+dir*1.5*1.5*A, tp2=price+dir*3*1.5*A;
   const chg=(price/cs.at(-2).c-1)*100;
@@ -382,12 +398,14 @@ function choppiness(cs,n){
   const rng=Math.max(...s.slice(1).map(x=>x.h))-Math.min(...s.slice(1).map(x=>x.l));
   return rng>0?100*Math.log10(tr/rng)/Math.log10(n):50;
 }
-function fmt(x,ref){const r=Math.abs(ref??x);const dp=r>=1000?2:r>=1?2:r>=.01?4:6;return Number(x).toLocaleString(undefined,{minimumFractionDigits:dp,maximumFractionDigits:dp})}
+function fmt(x,ref){const r=Math.abs(ref??x);const dp=r>=50?2:r>=1?4:r>=.01?5:6;return Number(x).toLocaleString(undefined,{minimumFractionDigits:dp,maximumFractionDigits:dp})}
 function pct(x){return (x>=0?"+":"")+x.toFixed(2)+"%"}
 
 /* ---------- links ---------- */
 const TV = {BTC:"BINANCE:BTCUSDT",ETH:"BINANCE:ETHUSDT",SOL:"BINANCE:SOLUSDT",XRP:"BINANCE:XRPUSDT",DOGE:"BINANCE:DOGEUSDT",BNB:"BINANCE:BNBUSDT",AVAX:"BINANCE:AVAXUSDT",LINK:"BINANCE:LINKUSDT",
-  SPY:"AMEX:SPY",QQQ:"NASDAQ:QQQ","^GSPC":"SP:SPX","^IXIC":"NASDAQ:IXIC","^NDX":"NASDAQ:NDX","ES=F":"CME_MINI:ES1!","NQ=F":"CME_MINI:NQ1!"};
+  SPY:"AMEX:SPY",QQQ:"NASDAQ:QQQ","^GSPC":"SP:SPX","^IXIC":"NASDAQ:IXIC","^NDX":"NASDAQ:NDX","ES=F":"CME_MINI:ES1!","NQ=F":"CME_MINI:NQ1!","YM=F":"CBOT_MINI:YM1!",PAXG:"BINANCE:PAXGUSDT",
+  "GC=F":"COMEX:GC1!","SI=F":"COMEX:SI1!","HG=F":"COMEX:HG1!","PL=F":"NYMEX:PL1!","CL=F":"NYMEX:CL1!","BZ=F":"NYMEX:BB1!","NG=F":"NYMEX:NG1!",
+  "^GDAXI":"XETR:DAX","^VIX":"CBOE:VIX","EURUSD=X":"FX:EURUSD","GBPUSD=X":"FX:GBPUSD","USDJPY=X":"FX:USDJPY","AUDUSD=X":"FX:AUDUSD","USDCHF=X":"FX:USDCHF","USDCAD=X":"FX:USDCAD"};
 const TV_TF={"5m":"5","15m":"15","1h":"60","4h":"240","1d":"D"};
 function tvUrl(sym){return "https://www.tradingview.com/chart/?symbol="+encodeURIComponent(TV[sym]||sym)+"&interval="+TV_TF[S.tf]}
 function phantomUrl(sym){const t="https://app.hyperliquid.xyz/trade/"+sym;return "https://phantom.app/ul/browse/"+encodeURIComponent(t)+"?ref="+encodeURIComponent("https://app.hyperliquid.xyz")}
@@ -465,8 +483,10 @@ function renderScan(){
     return `<li role="option" aria-selected="${sym===S.sel}" data-sym="${esc(sym)}"><span class="sym">${esc(label(sym))}</span><span>${pill}<button class="x" data-rm="${esc(sym)}" aria-label="Remove ${esc(sym)}">×</button></span>${sub}<span></span></li>`}).join("");
   document.getElementById("scanCount").textContent=S.watch.filter(s=>data[s]?.a&&["LONG","SHORT"].includes(data[s].a.signal)).length+" live calls";
 }
-const NAMES={SPY:"S&P 500 (SPY)",QQQ:"Nasdaq 100 (QQQ)","^GSPC":"S&P 500 index","^IXIC":"Nasdaq index","ES=F":"S&P futures","NQ=F":"Nasdaq futures"};
-function label(s){return NAMES[s]||s}
+const NAMES={SPY:"S&P 500 (SPY)",QQQ:"Nasdaq 100 (QQQ)",PAXG:"Gold 24/7 (PAXG)","GC=F":"Gold","SI=F":"Silver","CL=F":"Oil (WTI)","BZ=F":"Oil (Brent)","NG=F":"Natural gas","HG=F":"Copper","PL=F":"Platinum",
+  "ES=F":"S&P futures","NQ=F":"Nasdaq futures","YM=F":"Dow futures","^GSPC":"S&P 500 index","^IXIC":"Nasdaq index","^GDAXI":"DAX","^VIX":"VIX",
+  "EURUSD=X":"EUR/USD","GBPUSD=X":"GBP/USD","USDJPY=X":"USD/JPY","AUDUSD=X":"AUD/USD","USDCHF=X":"USD/CHF","USDCAD=X":"USD/CAD"};
+function label(s){return NAMES[s]||PICK_NAME[s]||s}
 
 function renderFocus(){
   const sym=S.sel, d=data[sym]||{}, a=d.a;
@@ -497,7 +517,7 @@ function renderBots(sym,d,a){
     linksHtml(sym,true);
 
   // Kelly: leverage from risk budget and stop distance
-  const stopPct=Math.abs(a.price-a.stop)/a.price; const cap=CRYPTO.has(sym)?10:4;
+  const stopPct=Math.abs(a.price-a.stop)/a.price; const K=CLASS[d.meta.kind]||CLASS.stock; const cap=K.cap;
   const raw=(S.risk/100)/stopPct; const lev=Math.max(1,Math.min(cap,Math.floor(raw*10)/10));
   const notional=S.acct*Math.min(raw,cap); const liq=a.price*(1-a.dir*(1/lev-.005));
   const loss=notional*stopPct;
@@ -505,7 +525,7 @@ function renderBots(sym,d,a){
   kelly.innerHTML=botHead("Kelly")+
     `<div class="bsay">${active?`Use <b>${lev.toFixed(1)}x</b>. With your stop ${(stopPct*100).toFixed(2)}% away, that keeps the loss at about <b>$${loss.toFixed(0)}</b> (${S.risk}% of $${S.acct}) if Atlas is wrong.`:`No trade, no leverage. When Atlas calls one, I'll size it so a stop-out costs ${S.risk}% of your account.`}</div>`+
     (active?`<div class="kv"><div><span>Leverage</span><strong>${lev.toFixed(1)}x</strong></div><div><span>Position</span><strong>$${notional.toFixed(0)}</strong></div><div><span>Liq. ≈</span><strong>${lev<=1?"none":fmt(liq,a.price)}</strong></div></div>`:"")+
-    (raw>cap&&active?`<div class="warn">Math allowed ${raw.toFixed(1)}x but I cap at ${cap}x on ${CRYPTO.has(sym)?"crypto":"stocks"}.</div>`:"")+
+    (raw>cap&&active?`<div class="warn">Math allowed ${raw.toFixed(1)}x but I cap at ${cap}x on ${K.label}.</div>`:"")+
     linksHtml(sym,false);
 
   // Redline: max leverage, with the liquidation reality check
@@ -516,7 +536,7 @@ function renderBots(sym,d,a){
   red.innerHTML=botHead("Redline")+
     `<div class="bsay">${active?`<b>${L}x ${side}.</b> `:`<b>${L}x</b> if you insist. `}Liquidation sits only <b>${(liqDist*100).toFixed(2)}%</b> away. A normal ${S.tf} candle here moves ${atrPct.toFixed(2)}%. <b>${hits} of the last ${cs.length}</b> candles would have liquidated this ${side} inside a single bar.</div>`+
     `<div class="kv"><div><span>Leverage</span><strong>${L}x</strong></div><div><span>Liq. price</span><strong>${fmt(liqPx,a.price)}</strong></div><div><span>Wiped by</span><strong>${hits}/${cs.length}</strong></div></div>`+
-    `<div class="warn">${liqDist<atrPct/100?"Liquidation is inside normal noise on this timeframe. Even a correct call usually gets stopped out first.":"Liquidation is outside one normal candle, but one bad wick still ends the trade."}</div>`+
+    `<div class="warn">${K.typical[0].toUpperCase()+K.typical.slice(1)}. ${liqDist<atrPct/100?"Liquidation is inside normal noise on this timeframe. Even a correct call usually gets stopped out first.":"Liquidation is outside one normal candle, but one bad wick still ends the trade."}</div>`+
     linksHtml(sym,false);
 }
 
@@ -652,7 +672,7 @@ document.addEventListener("click",e=>{
   if(t.dataset.sym){view.off=0;view.n=DEFAULT_BARS;S.sel=t.dataset.sym;save("sel",S.sel);if(!S.watch.includes(S.sel)){S.watch.push(S.sel);save("watch",S.watch)}renderScan();renderFocus();loop()}
 });
 document.getElementById("scan").addEventListener("keydown",e=>{if(e.key==="Enter"){const li=e.target.closest("li");li&&li.click()}});
-document.getElementById("addForm").addEventListener("submit",e=>{e.preventDefault();const v=document.getElementById("addInput").value.trim().toUpperCase();if(!v)return;if(!S.watch.includes(v))S.watch.push(v);save("watch",S.watch);S.sel=v;save("sel",v);document.getElementById("addInput").value="";renderScan();tick=0;loop()});
+document.getElementById("addForm").addEventListener("submit",e=>{e.preventDefault();let v=document.getElementById("addInput").value.trim().toUpperCase();if(!v)return;v=ALIAS[v.replace(/[\s\/]/g,"")]||v;if(!S.watch.includes(v))S.watch.push(v);save("watch",S.watch);S.sel=v;save("sel",v);document.getElementById("addInput").value="";renderScan();tick=0;loop()});
 document.getElementById("soundBtn").addEventListener("click",e=>{S.sound=!S.sound;e.target.setAttribute("aria-pressed",S.sound);e.target.textContent=S.sound?"Sound on":"Sound off";if(S.sound)ping("LONG")});
 const dlg=document.getElementById("settings");
 function openSettings(){sAcct.value=S.acct;sRisk.value=S.risk;sMax.value=S.maxLev;sFomo.value=S.fomo;sBroker.value=S.broker;dlg.showModal()}
@@ -662,6 +682,7 @@ dlg.addEventListener("close",()=>{if(dlg.returnValue!=="save")return;
   ["acct","risk","maxLev","fomo","broker"].forEach(k=>save(k,S[k]));renderFocus()});
 window.addEventListener("resize",()=>renderFocus());
 
+document.getElementById("marketList").innerHTML=PICKS.map(([t,n])=>`<option value="${esc(t)}">${esc(n)}</option>`).join("");
 renderTf(); renderLayers(); renderFeed(); renderScan(); renderFocus(); loop();
 </script>
 </body>
