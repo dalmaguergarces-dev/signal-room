@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,11 +69,30 @@ def fetch_json(url, ttl):
     return data
 
 
+# Binance blocks some cloud servers (e.g. US hosting returns 418/451), so fall back to
+# Binance.US, which serves the same API and data format. The first host that works is kept.
+BINANCE_HOSTS = ["https://data-api.binance.vision", "https://api.binance.us"]
+_binance = {"host": None}
+
+
+def binance_json(path, ttl):
+    hosts = [_binance["host"]] if _binance["host"] else BINANCE_HOSTS
+    last = None
+    for h in hosts:
+        try:
+            data = fetch_json(h + path, ttl)
+            _binance["host"] = h
+            return data
+        except (urllib.error.URLError, TimeoutError, ValueError) as e:  # HTTPError is a URLError
+            last = e
+    if _binance["host"]:  # the remembered host stopped working: try them all next time
+        _binance["host"] = None
+    raise last
+
+
 def crypto_candles(sym, tf):
     pair = CRYPTO[sym]
-    url = (f"https://data-api.binance.vision/api/v3/klines?symbol={pair}"
-           f"&interval={tf}&limit=500")
-    raw = fetch_json(url, 2)
+    raw = binance_json(f"/api/v3/klines?symbol={pair}&interval={tf}&limit=500", 2)
     candles = [{"t": k[0], "o": float(k[1]), "h": float(k[2]), "l": float(k[3]),
                 "c": float(k[4]), "v": float(k[5]), "tb": float(k[9])} for k in raw]
     return {"symbol": sym, "kind": "crypto", "source": "Binance", "open": True,
@@ -113,7 +133,7 @@ def yahoo_candles(sym, tf):
 
 def depth(sym):
     pair = CRYPTO[sym]
-    raw = fetch_json(f"https://data-api.binance.vision/api/v3/depth?symbol={pair}&limit=100", 2)
+    raw = binance_json(f"/api/v3/depth?symbol={pair}&limit=100", 2)
     return {"bids": [[float(p), float(q)] for p, q in raw["bids"]],
             "asks": [[float(p), float(q)] for p, q in raw["asks"]]}
 
