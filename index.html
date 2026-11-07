@@ -75,6 +75,7 @@ main{display:grid;grid-template-columns:300px minmax(0,1fr) 360px;gap:14px;paddi
 .toast.LONG{border-left:5px solid var(--long)}.toast.SHORT{border-left:5px solid var(--short)}
 .toast h3{margin:0;font:700 16px/1.2 var(--display)}
 .toast .kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+.toast.leaving{opacity:0;transform:translateY(8px);transition:opacity .3s,transform .3s}
 @keyframes tin{from{transform:translateY(12px);opacity:0}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion:reduce){.toast{animation:none}}
 .add{display:flex;gap:6px;padding:8px 12px 14px}
@@ -561,6 +562,10 @@ function fireAlert(sym,a){
     <div><span>Target 3:1</span><strong>${fmt(a.tp1,a.price)}</strong></div><div><span>Leverage</span><strong>${k.lev.toFixed(1)}x</strong></div></div>
     <div class="links"><button data-sym="${esc(sym)}" class="primary" style="background:var(--accent);color:#1a1405;border-color:var(--accent)">View</button>${ENTROPY[sym]?`<a class="entropy" href="${entropyUrl(sym)}" target="_blank" rel="noopener">Entropy</a>`:""}<button data-dismiss>Dismiss</button></div>`;
   document.getElementById("toasts").prepend(el);
+  // Fades out after 4 s if left alone. Touching, hovering or tabbing into it keeps it until dismissed.
+  const keep=()=>{clearTimeout(el._t);el.classList.remove("leaving")};
+  ["pointerenter","pointerdown","focusin","touchstart"].forEach(ev=>el.addEventListener(ev,keep,{once:true,passive:true}));
+  el._t=setTimeout(()=>{el.classList.add("leaving");setTimeout(()=>el.remove(),300)},4000);
   say("Atlas",sym,`ALERT ${side.toUpperCase()} ${name}: ${body}`,a.signal);
   chime(a.signal); try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch{}
   flashTitle(a.signal);
