@@ -1,1 +1,2 @@
-# Standard library only. This file exists so hosts detect a Python app.
+# Only needed for the AI follow check (ai_check.py). Everything else is standard library.
+anthropic>=2.6,<3

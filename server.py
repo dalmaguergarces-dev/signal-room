@@ -15,6 +15,7 @@ Access keys
   key, so nothing is stored. Block a friend by adding their name to REVOKED
   (comma separated env var). Changing OWNER_KEY cancels every friend key at once.
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -201,6 +202,19 @@ _issued = set()  # TikTok names that got a key from /get-key since the server st
 # has checked on TikTok that they follow and tapped Approve in the Keys panel.
 APPROVAL = os.environ.get("APPROVAL", "off").lower() == "on"
 _requests = {}   # request id -> {handle, name, t, ip, status: pending/approved/denied/delivered}
+
+# AI follow check: on when ANTHROPIC_API_KEY is set (and APPROVAL is off). Followers
+# upload a screenshot of the DoNoJob TikTok profile; Claude checks it shows "Following".
+try:
+    import ai_check
+except ImportError:  # SDK not installed: the check stays off
+    ai_check = None
+AI_CHECKS_PER_DAY = int(os.environ.get("AI_CHECKS_PER_DAY", "300"))  # spending cap
+_ai = {"day": "", "count": 0, "seen": set(), "log": []}
+
+
+def ai_mode():
+    return bool(ai_check and ai_check.enabled()) and not APPROVAL
 
 
 def logins_today(name):
@@ -396,9 +410,38 @@ def getkey_form(err=""):
 <input name="handle" autocomplete="username" placeholder="your TikTok @" aria-label="Your TikTok username" required maxlength="25">
 <label class="check"><input type="checkbox" name="follows" required> I follow @{TIKTOK}. Keys of people who don't follow get blocked.</label>
 <label class="check"><input type="checkbox" name="risk" required> I understand the signals are automated, often wrong and not financial advice. Leverage can wipe out my whole position. I trade at my own risk.</label>
-<button type="submit">{"Request my key" if APPROVAL else "Get my key"}</button>
+{ai_fields() if ai_mode() else ""}
+<button type="submit" id="go">{"Request my key" if APPROVAL else "Check and get my key" if ai_mode() else "Get my key"}</button>
 <div class="err" role="alert">{err}</div>
 <p class="alt">Already have a key? <a href="/login">Log in</a></p></form>""")
+
+
+def ai_fields():
+    return f"""<div style="text-align:left;margin:14px 0 4px;font-size:14px">
+<b>Prove you follow:</b> open <b>@{TIKTOK}</b>'s profile in TikTok, check the button says <b>Following</b>, take a screenshot and add it here.</div>
+<input type="file" id="shot" accept="image/*" required aria-label="Screenshot of @{TIKTOK}'s profile showing Following" style="font-size:14px;padding:10px">
+<script>
+document.addEventListener("DOMContentLoaded",function(){{
+  var f=document.querySelector('form[action="/get-key"]'), err=f.querySelector(".err"), go=document.getElementById("go");
+  function shrink(file){{return new Promise(function(ok,bad){{var img=new Image();img.onload=function(){{
+    var s=Math.min(1,1400/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);ok(c.toDataURL("image/jpeg",0.85).split(",")[1])}};img.onerror=bad;img.src=URL.createObjectURL(file)}})}}
+  f.addEventListener("submit",async function(e){{
+    e.preventDefault(); err.textContent=""; var file=document.getElementById("shot").files[0];
+    if(!file){{err.textContent="Add your screenshot first.";return}}
+    go.disabled=true; go.textContent="Checking your screenshot…";
+    try{{
+      var image=await shrink(file);
+      var r=await fetch("/get-key/ai",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{
+        handle:f.handle.value,follows:f.follows.checked,risk:f.risk.checked,image:image,media_type:"image/jpeg"}})}});
+      var j=await r.json();
+      if(j.ok){{document.open();document.write(j.html);document.close();return}}
+      err.textContent=j.error||"That didn't work. Try again.";
+    }}catch(x){{err.textContent="Couldn't read that image. Try a normal screenshot."}}
+    go.disabled=false; go.textContent="Check and get my key";
+  }});
+}});
+</script>"""
 
 
 def getkey_done(handle, key):
@@ -525,6 +568,60 @@ class Handler(BaseHTTPRequestHandler):
                              {"Set-Cookie": self.cookie_for(rid, 7 * 86400, "sr_req")})
         return self.issue_key(handle, name, ip)
 
+    def get_key_ai(self, body):
+        j = lambda code, **kw: self.send(code, json.dumps(kw))
+        if not (SIGNUP and ai_mode()):
+            return j(404, error="The screenshot check is off.")
+        try:
+            d = json.loads(body or "{}")
+        except ValueError:
+            return j(400, error="Something went wrong. Reload the page and try again.")
+        handle = str(d.get("handle", "")).strip().lstrip("@").lower()
+        if not HANDLE_RE.match(handle):
+            return j(400, error="That doesn't look like a TikTok @. Use letters, numbers, _ and . only.")
+        if not (d.get("follows") and d.get("risk")):
+            return j(400, error="Tick both boxes to continue.")
+        name = handle_to_name(handle)
+        if name in _issued:
+            return j(409, error="This @ already has a key. Each person gets one. If it's yours and you lost it, message @" + TIKTOK + ".")
+        if name in REVOKED:
+            return j(403, error="This @ is blocked. Message @" + TIKTOK + " on TikTok if you think that's a mistake.")
+        media = str(d.get("media_type", ""))
+        if media not in ("image/jpeg", "image/png", "image/webp"):
+            return j(400, error="Upload a normal screenshot (JPG or PNG).")
+        try:
+            image = base64.b64decode(str(d.get("image", "")), validate=True)
+        except (ValueError, TypeError):
+            return j(400, error="Couldn't read that image. Try a normal screenshot.")
+        if not 2_000 < len(image) < 5_000_000:
+            return j(400, error="That image is too small or too big. Use a normal screenshot.")
+        digest = hashlib.sha256(image).hexdigest()
+        if digest in _ai["seen"]:
+            return j(409, error="That exact screenshot was already used. Take your own fresh one.")
+        ip, now = self.ip(), time.time()
+        recent = [t for t in _signup_ips.get(ip, []) if now - t < 3600]
+        if len(recent) >= 5:
+            return j(429, error="Too many tries from this connection. Try again in an hour.")
+        today = time.strftime("%Y-%m-%d")
+        if _ai["day"] != today:
+            _ai.update(day=today, count=0)
+        if _ai["count"] >= AI_CHECKS_PER_DAY:
+            return j(503, error="Key checks are paused for today. Try again tomorrow.")
+        _signup_ips[ip] = recent + [now]
+        _ai["count"] += 1
+        result = ai_check.check_follow(image, media, TIKTOK)
+        _ai["log"] = ([{"t": int(now * 1000), "handle": handle, "ok": result["ok"], "reason": result["reason"]}] + _ai["log"])[:100]
+        print(f"[ai-check] @{handle}: {'PASS' if result['ok'] else 'FAIL'} - {result['reason']}", flush=True)
+        if not result["ok"]:
+            return j(200, ok=False, error=result["reason"])
+        _ai["seen"].add(digest)
+        key = friend_key(name)
+        _issued.add(name)
+        _signups.append((now, handle))
+        del _signups[:-200]
+        return self.send(200, json.dumps({"ok": True, "html": getkey_done(handle, key)}), "application/json",
+                         {"Set-Cookie": self.cookie_for(new_session("friend", name, ip))})
+
     def issue_key(self, handle, name, ip):
         now = time.time()
         key = friend_key(name)
@@ -554,7 +651,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
-        n = min(int(self.headers.get("Content-Length") or 0), 4096)
+        limit = 8_000_000 if u.path == "/get-key/ai" else 4096
+        n = min(int(self.headers.get("Content-Length") or 0), limit)
         body = self.rfile.read(n).decode("utf-8", "replace")
         if u.path == "/login":
             ip = self.ip()
@@ -572,7 +670,11 @@ class Handler(BaseHTTPRequestHandler):
             _fails.setdefault(ip, []).append(time.time())
             return self.login_page("That key doesn't work. Check it and try again.", 401)
         if u.path == "/get-key":
+            if ai_mode():  # keys only after the screenshot check
+                return self.send(400, getkey_form("Add your screenshot to get a key."), "text/html; charset=utf-8")
             return self.get_key(body)
+        if u.path == "/get-key/ai":
+            return self.get_key_ai(body)
         me = self.who()
         if not me or me[0] == "kicked":
             return self.send(401, json.dumps({"error": me[0] if me else "locked"}))
@@ -661,7 +763,9 @@ class Handler(BaseHTTPRequestHandler):
                 if me[0] != "owner":
                     return self.send(403, json.dumps({"error": "Only the owner can see sign-ups."}))
                 return self.send(200, json.dumps({
-                    "signup": SIGNUP, "tiktok": TIKTOK, "approval": APPROVAL,
+                    "signup": SIGNUP, "tiktok": TIKTOK, "approval": APPROVAL, "ai": ai_mode(),
+                    "ai_checks": _ai["log"][:50], "ai_today": _ai["count"] if _ai["day"] == time.strftime("%Y-%m-%d") else 0,
+                    "ai_cap": AI_CHECKS_PER_DAY,
                     "owner_topic": topic_for("OWNER") if PUSH else "",
                     "requests": [{"id": k, "handle": r["handle"], "t": int(r["t"] * 1000), "status": r["status"]}
                                  for k, r in sorted(_requests.items(), key=lambda kv: -kv[1]["t"])

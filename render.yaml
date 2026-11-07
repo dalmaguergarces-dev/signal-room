@@ -3,7 +3,7 @@ services:
     name: donojob
     runtime: python
     plan: free
-    buildCommand: "echo no dependencies"
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "python server.py"
     healthCheckPath: /healthz
     envVars:
@@ -15,3 +15,7 @@ services:
       # Names of friends whose keys should stop working, comma separated.
       - key: REVOKED
         value: ""
+      # Turns on the AI follow check on the key page. Paste your key from
+      # console.anthropic.com in the Render dashboard; it is never stored in the repo.
+      - key: ANTHROPIC_API_KEY
+        sync: false
